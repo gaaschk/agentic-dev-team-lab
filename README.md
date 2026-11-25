@@ -55,6 +55,11 @@ starts the server. Then open http://127.0.0.1:5050. `SMART_ROUTER_URL`/
 `SMART_ROUTER_API_KEY` still have to be set in the environment, same as
 the CLI.
 
+`run.sh` also tees the server's output to `webapp.log` in the project root
+(git-ignored), in addition to the terminal, so activity can be inspected
+after the fact or from a session that isn't attached to that terminal —
+`tail -f webapp.log`.
+
 ## Retry or stop
 
 On a timeout, temporary router failure, or invalid agent response, choose
