@@ -9,7 +9,7 @@ import plan_release
 from team_agents.reviewer_agent import REVIEW_FORMAT
 from team_agents.role_agents import Artifact, run
 from tests.test_qa_agent import QA_PLAN
-from tests.test_plan_release import DESIGN, PLAN
+from tests.test_plan_release import DESIGN, PLAN, PROPOSAL
 
 
 class ArtifactAgentTests(TestCase):
@@ -50,7 +50,7 @@ class ArtifactAgentTests(TestCase):
             '{"action":"read:brief"}', json.dumps(PLAN),
             '{"action":"read:approved_plan"}', '{"action":"submit"}', json.dumps(DESIGN),
             '{"action":"read:requirements"}', json.dumps(QA_PLAN),
-            "A proposed candidate",
+            json.dumps(PROPOSAL),
             '{"action":"read:criteria"}',
             '{"verdict":"PASS","blockers":[]}',
         ]
@@ -71,7 +71,7 @@ class ArtifactAgentTests(TestCase):
         self.assertIn("QA plan only. No tests have run.", output.getvalue())
         self.assertIn("Reviewer tool: read(candidate)", output.getvalue())
         observations = json.loads(decide.call_args.args[1].split("\n\n", 1)[1])
-        self.assertEqual(observations["candidate"], "A proposed candidate")
+        self.assertEqual(observations["candidate"], PROPOSAL)
         self.assertEqual(observations["criteria"]["plan"], PLAN)
         self.assertEqual(observations["criteria"]["design"], DESIGN)
 
@@ -80,7 +80,7 @@ class ArtifactAgentTests(TestCase):
             '{"action":"read:brief"}', json.dumps(PLAN),
             '{"action":"read:approved_plan"}', '{"action":"submit"}', json.dumps(DESIGN),
             '{"action":"read:requirements"}', json.dumps(QA_PLAN),
-            "A proposed candidate",
+            json.dumps(PROPOSAL),
             '{"action":"submit"}',  # Illegal before either artifact is read.
             '{"action":"read:criteria"}', '{"verdict":"PASS","blockers":[]}',
         ]

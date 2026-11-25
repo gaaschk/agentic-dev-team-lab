@@ -64,12 +64,12 @@ def execute_node(node, state, *, retry, prompt, emit, on_start=None, on_output=N
                            auto_retryable=node.auto_retryable)
     except SystemExit as failure:
         if on_output:
-            on_output(node.name, str(failure))
+            on_output(node.name, None, str(failure), False)
         raise
     state[node.output] = result
     rendered = node.render(result)
     if on_output:
-        on_output(node.name, rendered)
+        on_output(node.name, result, rendered, True)
     else:
         emit(rendered)
 
