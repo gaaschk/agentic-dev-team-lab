@@ -46,13 +46,14 @@ type a goal, approve/reject the plan and design in the browser, and watch
 each role's output stream in. One run at a time, native runtime only.
 
 ```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements-web.txt
-.venv/bin/python webapp.py
+./run.sh
 ```
 
-Then open http://127.0.0.1:5050. `SMART_ROUTER_URL`/`SMART_ROUTER_API_KEY`
-still have to be set in the environment, same as the CLI.
+`run.sh` creates `.venv` if it's missing, installs `requirements-web.txt`
+(every run, so a dependency change or an incomplete venv self-heals), and
+starts the server. Then open http://127.0.0.1:5050. `SMART_ROUTER_URL`/
+`SMART_ROUTER_API_KEY` still have to be set in the environment, same as
+the CLI.
 
 ## Retry or stop
 
