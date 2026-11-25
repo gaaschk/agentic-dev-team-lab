@@ -39,6 +39,21 @@ The baseline runner is linear, synchronous, and in memory. It doesn't save
 checkpoints or resume after the process exits. No agent decides whether to
 bypass an approval or execute a proposal.
 
+## Web UI (v1, minimal)
+
+`webapp.py` runs the same native workflow behind a single-page Flask UI:
+type a goal, approve/reject the plan and design in the browser, and watch
+each role's output stream in. One run at a time, native runtime only.
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-web.txt
+.venv/bin/python webapp.py
+```
+
+Then open http://127.0.0.1:5050. `SMART_ROUTER_URL`/`SMART_ROUTER_API_KEY`
+still have to be set in the environment, same as the CLI.
+
 ## Retry or stop
 
 On a timeout, temporary router failure, or invalid agent response, choose
