@@ -49,10 +49,11 @@ each role's output stream in. One run at a time, native runtime only.
 ./run.sh
 ```
 
-`run.sh` creates `.venv` and installs `requirements-web.txt` on first run,
-then starts the server every time after. Then open http://127.0.0.1:5050.
-`SMART_ROUTER_URL`/`SMART_ROUTER_API_KEY` still have to be set in the
-environment, same as the CLI.
+`run.sh` creates `.venv` if it's missing, installs `requirements-web.txt`
+(every run, so a dependency change or an incomplete venv self-heals), and
+starts the server. Then open http://127.0.0.1:5050. `SMART_ROUTER_URL`/
+`SMART_ROUTER_API_KEY` still have to be set in the environment, same as
+the CLI.
 
 ## Retry or stop
 
