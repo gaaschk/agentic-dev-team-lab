@@ -8,4 +8,4 @@ if [ ! -x .venv/bin/python ]; then
 fi
 .venv/bin/python -m pip install -q -r requirements-web.txt
 
-exec .venv/bin/python webapp.py
+exec .venv/bin/python webapp.py 2>&1 | tee -a webapp.log
