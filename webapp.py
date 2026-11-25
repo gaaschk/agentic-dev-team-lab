@@ -157,7 +157,7 @@ def start_run(goal, *, autonomous=False):
                 review=lambda *a: ask_agent_reviewer(*a, decide=ask_role),
                 artifact_runner=native_artifacts,
             )
-            retry = AgentRetry(prompt=io.prompt, emit=io.emit, auto_retries=2)
+            retry = AgentRetry(prompt=io.prompt, emit=io.emit, auto_retries=1)
             approve = make_approval_prompt(io, autonomous)
             run_workflow(workflow, {"goal": goal}, retry=retry, prompt=approve, emit=io.emit,
                          on_start=io.start_stage, on_output=io.finish_stage)

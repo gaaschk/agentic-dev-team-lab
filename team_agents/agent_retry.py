@@ -7,25 +7,29 @@ class RetryableAgentError(SystemExit):
     """A transport or response failure, not a blocker or an approval decision."""
 
 
+class TransientTimeout(RetryableAgentError):
+    """A model/network timeout: the only failure the operations agent may
+    retry automatically, and only for a stage explicitly marked safe to repeat."""
+
+
 class AgentRetry:
     def __init__(self, *, prompt=None, emit=None, auto_retries=0):
         self.retry_all = False
         self.prompt = prompt
         self.emit = emit or (lambda text: print(text, file=sys.stderr))
-        self.auto_retries = auto_retries
+        self.auto_retries_left = auto_retries
 
-    def run(self, stage, attempt, *, stopped=None):
-        """Run a safe operation; an Operations agent absorbs transient failures
-        (timeouts, transport errors) with silent retries before asking a human."""
+    def run(self, stage, attempt, *, stopped=None, auto_retryable=False):
+        """Run a safe operation; the operations agent may silently retry once,
+        for the whole run, a timeout on a stage marked safe to repeat. Anything
+        else recoverable (malformed output, HTTP errors) only asks a human."""
         try:
             return attempt(None)
         except RetryableAgentError as failure:
             self.emit(str(failure))
-            for n in range(self.auto_retries):
-                self.emit(
-                    f"[operations] {stage} looks transient. "
-                    f"Auto-retrying ({n + 1}/{self.auto_retries})…"
-                )
+            if auto_retryable and self.auto_retries_left > 0 and isinstance(failure, TransientTimeout):
+                self.auto_retries_left -= 1
+                self.emit(f"[operations] {stage} timed out. Auto-retrying (run's one automatic retry).")
                 try:
                     return attempt(failure)
                 except RetryableAgentError as retry_failure:

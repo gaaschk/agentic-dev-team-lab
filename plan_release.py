@@ -8,7 +8,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
 
-from team_agents.agent_retry import AgentRetry, RetryableAgentError
+from team_agents.agent_retry import AgentRetry, RetryableAgentError, TransientTimeout
 from team_agents.model_config import resolve_model
 from team_agents.role_agents import run as native_artifacts
 from examples import EXAMPLES, load_brief
@@ -67,10 +67,10 @@ def ask_role(role, goal, *, response_format=None, model=None, stage="Model"):
         error = RetryableAgentError if exc.code in {408, 429, 500, 502, 503, 504} else SystemExit
         raise error(diagnostic(f"router returned HTTP {exc.code}")) from None
     except TimeoutError:
-        raise RetryableAgentError(diagnostic("request timed out")) from None
+        raise TransientTimeout(diagnostic("request timed out")) from None
     except URLError as exc:
         if isinstance(exc.reason, TimeoutError):
-            raise RetryableAgentError(diagnostic("connection timed out")) from None
+            raise TransientTimeout(diagnostic("connection timed out")) from None
         raise RetryableAgentError(diagnostic(f"connection failed ({type(exc.reason).__name__})")) from None
     except (ConnectionError, http.client.HTTPException) as exc:
         raise RetryableAgentError(diagnostic(f"response interrupted ({type(exc).__name__})")) from None

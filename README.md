@@ -63,12 +63,17 @@ this run, or `s` (or Enter) to stop. A failed retry ends the run. This does not
 override a real blocker or substitute for an approval.
 
 `AgentRetry(auto_retries=N)` adds an operations layer in front of that choice:
-it absorbs up to `N` transient failures (timeouts, transport errors) on its
-own, logging each attempt, before ever asking a human. The web UI runs with
-`auto_retries=2`; the CLI defaults to `0` (asks immediately, as above). Before
-starting a web UI run, the same operations agent checks the environment —
-`SMART_ROUTER_URL`/`SMART_ROUTER_API_KEY` are set and the router is reachable
-— and refuses to start with a clear message instead of crashing mid-run.
+it spends a budget of `N` automatic retries for the whole run — not per
+stage — on its own, logging each attempt, before ever asking a human. Only a
+`TransientTimeout` (a genuine model/network timeout) is eligible, and only on
+a workflow `Step` explicitly marked `auto_retryable=True`; a malformed or
+invalid response, or any other `RetryableAgentError`, always goes straight to
+the human choice above, since repeating a stage can repeat earlier model
+calls within it. The web UI runs with `auto_retries=1`; the CLI defaults to
+`0` (asks immediately, as above). Before starting a web UI run, the same
+operations agent checks the environment — `SMART_ROUTER_URL`/
+`SMART_ROUTER_API_KEY` are set and the router is reachable — and refuses to
+start with a clear message instead of crashing mid-run.
 
 The lab sends `X-Smart-Router-Memory: off` and requires acknowledgment. This
 disables GBrain retrieval and save-back for these requests, not usage logging.

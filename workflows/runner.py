@@ -14,6 +14,7 @@ class Step:
     before: str = ""
     render: Callable = str
     retry_stop: str | None = None
+    auto_retryable: bool = False
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,8 @@ def execute_node(node, state, *, retry, prompt, emit, on_start=None, on_output=N
         return node.action(failure, *inputs)
 
     try:
-        result = retry.run(node.name, attempt, stopped=node.retry_stop)
+        result = retry.run(node.name, attempt, stopped=node.retry_stop,
+                           auto_retryable=node.auto_retryable)
     except SystemExit as failure:
         if on_output:
             on_output(node.name, str(failure))
