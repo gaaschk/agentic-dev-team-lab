@@ -1,11 +1,11 @@
 #!/bin/sh
-# Set up (first run only) and start the web UI from the project root.
+# Set up (first run, or if .venv is missing/incomplete) and start the web UI.
 set -e
 cd "$(dirname "$0")"
 
-if [ ! -d .venv ]; then
+if [ ! -x .venv/bin/python ]; then
     python3 -m venv .venv
-    .venv/bin/python -m pip install -r requirements-web.txt
 fi
+.venv/bin/python -m pip install -q -r requirements-web.txt
 
 exec .venv/bin/python webapp.py
