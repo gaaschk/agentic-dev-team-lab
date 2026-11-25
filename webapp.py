@@ -118,8 +118,14 @@ def operations_preflight():
     if missing:
         return f"[operations] Missing environment: {', '.join(missing)}. Set them and restart the server."
 
-    parsed = urlparse(os.environ["SMART_ROUTER_URL"])
-    host, port = parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+    url = os.environ["SMART_ROUTER_URL"]
+    parsed = urlparse(url)
+    try:
+        host, port = parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as exc:
+        return f"[operations] SMART_ROUTER_URL has an invalid port ({exc})."
+    if parsed.scheme not in ("http", "https") or not host:
+        return f"[operations] SMART_ROUTER_URL ({url!r}) isn't a valid http(s) URL with a host."
     try:
         with socket.create_connection((host, port), timeout=3):
             pass

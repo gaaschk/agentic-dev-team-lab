@@ -99,3 +99,16 @@ class WorkflowRunnerTests(TestCase):
             with self.assertRaisesRegex(SystemExit, "Stopped."):
                 run(workflow, {"draft": {}}, retry=AgentRetry(auto_retries=1),
                     prompt=prompt, emit=Mock())
+
+    def test_on_output_still_fires_when_a_step_gives_up(self):
+        finished = []
+
+        def consume(failure):
+            raise RetryableAgentError("Still failing.")
+
+        workflow = (Step("Consume", (), "result", consume, retry_stop="Stopped."),)
+        with patch("builtins.input", return_value="s"):
+            with self.assertRaisesRegex(SystemExit, "Stopped."):
+                run(workflow, {}, retry=AgentRetry(), prompt=Mock(), emit=Mock(),
+                    on_output=lambda name, text: finished.append((name, text)))
+        self.assertEqual(finished, [("Consume", "Stopped.")])

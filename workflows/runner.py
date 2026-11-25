@@ -58,7 +58,12 @@ def execute_node(node, state, *, retry, prompt, emit, on_start=None, on_output=N
         inputs = (deepcopy(state[key]) for key in node.inputs)
         return node.action(failure, *inputs)
 
-    result = retry.run(node.name, attempt, stopped=node.retry_stop)
+    try:
+        result = retry.run(node.name, attempt, stopped=node.retry_stop)
+    except SystemExit as failure:
+        if on_output:
+            on_output(node.name, str(failure))
+        raise
     state[node.output] = result
     rendered = node.render(result)
     if on_output:
