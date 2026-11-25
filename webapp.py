@@ -4,6 +4,7 @@ Run: .venv/bin/python -m pip install -r requirements-web.txt
      .venv/bin/python webapp.py
 """
 
+import sys
 import threading
 
 from flask import Flask, jsonify, render_template_string, request
@@ -16,6 +17,30 @@ from workflows.release import release_workflow
 from workflows.runner import run as run_workflow
 
 app = Flask(__name__)
+
+# The roles report what they're doing (which agent, which tool call) via
+# print()/stderr. Tee the current worker thread's output into its WebIO log
+# too, so the page shows it, without touching every role module.
+_real_stdout, _real_stderr = sys.stdout, sys.stderr
+_thread_io = {}
+
+
+class _TeeStream:
+    def __init__(self, real):
+        self.real = real
+
+    def write(self, text):
+        self.real.write(text)
+        io = _thread_io.get(threading.get_ident())
+        if io and text.strip():
+            io.emit(text.rstrip())
+
+    def flush(self):
+        self.real.flush()
+
+
+sys.stdout = _TeeStream(_real_stdout)
+sys.stderr = _TeeStream(_real_stderr)
 
 
 class WebIO:
@@ -58,7 +83,19 @@ run_state = {"io": None}
 run_lock = threading.Lock()
 
 
-def start_run(goal):
+def make_approval_prompt(io, autonomous):
+    """Auto-approve the plan/design gates when autonomous mode is on; retries still ask."""
+
+    def prompt(text):
+        if autonomous and text.startswith("Approve"):
+            io.emit(f"[autonomous] {text.strip()} y")
+            return "y"
+        return io.prompt(text)
+
+    return prompt
+
+
+def start_run(goal, *, autonomous=False):
     """Refuse to start a second run while one is still in progress."""
     with run_lock:
         current = run_state["io"]
@@ -68,6 +105,7 @@ def start_run(goal):
         run_state["io"] = io
 
     def worker():
+        _thread_io[threading.get_ident()] = io
         try:
             workflow = release_workflow(
                 decide=ask_role,
@@ -75,10 +113,12 @@ def start_run(goal):
                 artifact_runner=native_artifacts,
             )
             retry = AgentRetry(prompt=io.prompt, emit=io.emit)
-            run_workflow(workflow, {"goal": goal}, retry=retry, prompt=io.prompt, emit=io.emit)
+            approve = make_approval_prompt(io, autonomous)
+            run_workflow(workflow, {"goal": goal}, retry=retry, prompt=approve, emit=io.emit)
         except SystemExit as exc:
             io.emit(str(exc))
         finally:
+            del _thread_io[threading.get_ident()]
             io.done = True
 
     threading.Thread(target=worker, daemon=True).start()
@@ -97,6 +137,7 @@ PAGE = """
 <h1>Agentic Dev Team Lab</h1>
 <div id="start">
   <textarea id="goal" placeholder="Describe what you want built..."></textarea><br>
+  <label><input type="checkbox" id="autonomous"> Run autonomously (auto-approve plan &amp; design gates)</label><br>
   <button onclick="startRun()">Start</button>
 </div>
 <pre id="log"></pre>
@@ -112,7 +153,8 @@ async function startRun() {
   const startButton = document.querySelector('#start button');
   startButton.disabled = true;
   const goal = document.getElementById('goal').value;
-  const res = await fetch('/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({goal})});
+  const autonomous = document.getElementById('autonomous').checked;
+  const res = await fetch('/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({goal, autonomous})});
   const body = await res.json();
   if (!body.ok) {
     startButton.disabled = false;
@@ -180,8 +222,8 @@ def index():
 
 @app.route("/start", methods=["POST"])
 def start():
-    goal = request.get_json()["goal"]
-    started = start_run(goal)
+    body = request.get_json()
+    started = start_run(body["goal"], autonomous=bool(body.get("autonomous")))
     return jsonify(ok=started), (200 if started else 409)
 
 
