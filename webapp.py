@@ -160,6 +160,15 @@ async function poll() {
   }
   if (!state.done) setTimeout(poll, 1000);
 }
+async function attachIfRunning() {
+  const res = await fetch('/state');
+  const state = await res.json();
+  if (!state.done) {
+    document.getElementById('start').style.display = 'none';
+    poll();
+  }
+}
+attachIfRunning();
 </script>
 """
 
