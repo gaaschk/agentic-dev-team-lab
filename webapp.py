@@ -137,14 +137,15 @@ def operations_preflight():
 def start_run(goal, *, autonomous=False):
     """Refuse to start a second run while one is still in progress, or if the
     operations agent's environment check finds something a run can't survive."""
-    error = operations_preflight()
-    if error:
-        return False, error
-
     with run_lock:
         current = run_state["io"]
         if current is not None and not current.done:
             return False, "A run is already in progress."
+
+        error = operations_preflight()
+        if error:
+            return False, error
+
         io = WebIO()
         run_state["io"] = io
 
@@ -259,7 +260,7 @@ function renderStages(stages) {
     title.className = 'stage-name status-' + stage.status;
     title.textContent = stage.name;
     div.appendChild(title);
-    if (stage.output) {
+    if (stage.output !== null) {
       const pre = document.createElement('pre');
       pre.textContent = stage.output;
       div.appendChild(pre);
