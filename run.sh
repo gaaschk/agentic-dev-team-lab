@@ -10,5 +10,6 @@ fi
 
 # Process substitution (not a pipe) keeps webapp.py as the exec'd process:
 # signals reach it directly and the script's exit status is its own.
-# -u keeps stdout/stderr unbuffered so webapp.log stays current.
-exec .venv/bin/python -u webapp.py > >(tee -a webapp.log) 2>&1
+# -u keeps stdout/stderr unbuffered so webapp.log stays current. tee (no -a)
+# starts the log fresh each run instead of growing it without bound.
+exec .venv/bin/python -u webapp.py > >(tee webapp.log) 2>&1
