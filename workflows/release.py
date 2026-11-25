@@ -26,7 +26,8 @@ def release_workflow(*, decide, review, artifact_runner=run_agent):
 
     return (
         Step("Product Lead", ("goal",), "plan",
-             partial(product_plan, decide=decide, artifact_runner=artifact_runner), render=pretty),
+             partial(product_plan, decide=decide, artifact_runner=artifact_runner),
+             before="\nAsking the Product Lead for a release plan…\n", render=pretty),
         Approval("plan", "approved_plan", "Approve this plan? [y/N] ",
                  "Stopped. Architect not called."),
         Step("Architect", ("goal", "approved_plan"), "design",
