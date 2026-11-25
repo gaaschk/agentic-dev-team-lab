@@ -4,8 +4,11 @@ Run: .venv/bin/python -m pip install -r requirements-web.txt
      .venv/bin/python webapp.py
 """
 
+import os
+import socket
 import sys
 import threading
+from urllib.parse import urlparse
 
 from flask import Flask, jsonify, render_template_string, request
 
@@ -95,12 +98,34 @@ def make_approval_prompt(io, autonomous):
     return prompt
 
 
+def operations_preflight():
+    """The operations agent's environment check: catch misconfiguration
+    before a run burns time on it, instead of a mid-run crash or timeout."""
+    missing = [v for v in ("SMART_ROUTER_URL", "SMART_ROUTER_API_KEY") if not os.environ.get(v)]
+    if missing:
+        return f"[operations] Missing environment: {', '.join(missing)}. Set them and restart the server."
+
+    parsed = urlparse(os.environ["SMART_ROUTER_URL"])
+    host, port = parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        with socket.create_connection((host, port), timeout=3):
+            pass
+    except OSError as exc:
+        return f"[operations] Can't reach the Smart AI Router at {host}:{port} ({exc})."
+    return None
+
+
 def start_run(goal, *, autonomous=False):
-    """Refuse to start a second run while one is still in progress."""
+    """Refuse to start a second run while one is still in progress, or if the
+    operations agent's environment check finds something a run can't survive."""
+    error = operations_preflight()
+    if error:
+        return False, error
+
     with run_lock:
         current = run_state["io"]
         if current is not None and not current.done:
-            return False
+            return False, "A run is already in progress."
         io = WebIO()
         run_state["io"] = io
 
@@ -122,7 +147,7 @@ def start_run(goal, *, autonomous=False):
             io.done = True
 
     threading.Thread(target=worker, daemon=True).start()
-    return True
+    return True, None
 
 
 PAGE = """
@@ -158,7 +183,7 @@ async function startRun() {
   const body = await res.json();
   if (!body.ok) {
     startButton.disabled = false;
-    alert('A run is already in progress.');
+    alert(body.error || 'A run is already in progress.');
     return;
   }
   document.getElementById('start').style.display = 'none';
@@ -223,8 +248,8 @@ def index():
 @app.route("/start", methods=["POST"])
 def start():
     body = request.get_json()
-    started = start_run(body["goal"], autonomous=bool(body.get("autonomous")))
-    return jsonify(ok=started), (200 if started else 409)
+    started, error = start_run(body["goal"], autonomous=bool(body.get("autonomous")))
+    return jsonify(ok=started, error=error), (200 if started else 409)
 
 
 @app.route("/state")
