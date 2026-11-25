@@ -50,3 +50,41 @@ class WorkflowRunnerTests(TestCase):
         self.assertEqual(result["result"], "done")
         prompt.assert_called_once_with("Approve?")
         retry_prompt.assert_called_once()
+
+    def test_operations_agent_auto_retries_before_asking_a_human(self):
+        seen = []
+
+        def consume(failure, artifact):
+            seen.append(artifact["contents"])
+            artifact["contents"] = "changed by consumer"
+            if failure is None:
+                raise RetryableAgentError("Temporary failure.")
+            return "done"
+
+        workflow = (
+            Approval("draft", "approved", "Approve?", "Declined."),
+            Step("Consume", ("approved",), "result", consume),
+        )
+        prompt = Mock(return_value="y")
+        with patch("builtins.input") as retry_prompt:
+            result = run(workflow, {"draft": {"contents": "fixed"}},
+                         retry=AgentRetry(auto_retries=2), prompt=prompt, emit=Mock())
+        self.assertEqual(seen, ["fixed", "fixed"])
+        self.assertEqual(result["approved"], {"contents": "fixed"})
+        self.assertEqual(result["result"], "done")
+        prompt.assert_called_once_with("Approve?")
+        retry_prompt.assert_not_called()
+
+    def test_human_still_decides_once_auto_retries_are_exhausted(self):
+        def consume(failure, artifact):
+            raise RetryableAgentError("Still failing.")
+
+        workflow = (
+            Approval("draft", "approved", "Approve?", "Declined."),
+            Step("Consume", ("approved",), "result", consume, retry_stop="Stopped."),
+        )
+        prompt = Mock(return_value="y")
+        with patch("builtins.input", return_value="s"):
+            with self.assertRaisesRegex(SystemExit, "Stopped."):
+                run(workflow, {"draft": {}}, retry=AgentRetry(auto_retries=1),
+                    prompt=prompt, emit=Mock())

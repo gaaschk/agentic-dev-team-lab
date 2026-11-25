@@ -62,6 +62,11 @@ On a timeout, temporary router failure, or invalid agent response, choose
 this run, or `s` (or Enter) to stop. A failed retry ends the run. This does not
 override a real blocker or substitute for an approval.
 
+`AgentRetry(auto_retries=N)` adds an operations layer in front of that choice:
+it absorbs up to `N` transient failures (timeouts, transport errors) on its
+own, logging each attempt, before ever asking a human. The web UI runs with
+`auto_retries=2`; the CLI defaults to `0` (asks immediately, as above).
+
 The lab sends `X-Smart-Router-Memory: off` and requires acknowledgment. This
 disables GBrain retrieval and save-back for these requests, not usage logging.
 Each call prints elapsed time and an ID you can find in the router's
