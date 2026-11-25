@@ -75,6 +75,17 @@ class WorkflowRunnerTests(TestCase):
         prompt.assert_called_once_with("Approve?")
         retry_prompt.assert_not_called()
 
+    def test_on_start_and_on_output_report_each_step_separately_from_emit(self):
+        started, finished, emitted = [], [], []
+        workflow = (
+            Step("Produce", (), "result", lambda failure: "value", render=lambda r: f"rendered:{r}"),
+        )
+        run(workflow, {}, retry=AgentRetry(), prompt=Mock(), emit=emitted.append,
+            on_start=started.append, on_output=lambda name, text: finished.append((name, text)))
+        self.assertEqual(started, ["Produce"])
+        self.assertEqual(finished, [("Produce", "rendered:value")])
+        self.assertEqual(emitted, [])
+
     def test_human_still_decides_once_auto_retries_are_exhausted(self):
         def consume(failure, artifact):
             raise RetryableAgentError("Still failing.")

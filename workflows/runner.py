@@ -37,7 +37,7 @@ def prepare(workflow, initial):
     return workflow, deepcopy(initial)
 
 
-def execute_node(node, state, *, retry, prompt, emit):
+def execute_node(node, state, *, retry, prompt, emit, on_start=None, on_output=None):
     """Only a human approval creates an approved artifact."""
     if isinstance(node, Approval):
         try:
@@ -51,6 +51,8 @@ def execute_node(node, state, *, retry, prompt, emit):
 
     if node.before:
         emit(node.before)
+    if on_start:
+        on_start(node.name)
 
     def attempt(failure):
         inputs = (deepcopy(state[key]) for key in node.inputs)
@@ -58,11 +60,16 @@ def execute_node(node, state, *, retry, prompt, emit):
 
     result = retry.run(node.name, attempt, stopped=node.retry_stop)
     state[node.output] = result
-    emit(node.render(result))
+    rendered = node.render(result)
+    if on_output:
+        on_output(node.name, rendered)
+    else:
+        emit(rendered)
 
 
-def run(workflow, initial, *, retry, prompt, emit):
+def run(workflow, initial, *, retry, prompt, emit, on_start=None, on_output=None):
     workflow, state = prepare(workflow, initial)
     for node in workflow:
-        execute_node(node, state, retry=retry, prompt=prompt, emit=emit)
+        execute_node(node, state, retry=retry, prompt=prompt, emit=emit,
+                      on_start=on_start, on_output=on_output)
     return state

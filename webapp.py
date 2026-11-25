@@ -52,6 +52,7 @@ class WebIO:
     def __init__(self):
         self.lock = threading.Lock()
         self.log = []
+        self.stages = []
         self.pending_prompt = None
         self.pending_id = 0
         self.answer_event = threading.Event()
@@ -61,6 +62,18 @@ class WebIO:
     def emit(self, text):
         with self.lock:
             self.log.append(text)
+
+    def start_stage(self, name):
+        with self.lock:
+            self.stages.append({"name": name, "status": "running", "output": None})
+
+    def finish_stage(self, name, output):
+        with self.lock:
+            for stage in reversed(self.stages):
+                if stage["name"] == name and stage["status"] == "running":
+                    stage["status"] = "done"
+                    stage["output"] = output
+                    return
 
     def prompt(self, text):
         with self.lock:
@@ -139,7 +152,8 @@ def start_run(goal, *, autonomous=False):
             )
             retry = AgentRetry(prompt=io.prompt, emit=io.emit, auto_retries=2)
             approve = make_approval_prompt(io, autonomous)
-            run_workflow(workflow, {"goal": goal}, retry=retry, prompt=approve, emit=io.emit)
+            run_workflow(workflow, {"goal": goal}, retry=retry, prompt=approve, emit=io.emit,
+                         on_start=io.start_stage, on_output=io.finish_stage)
         except SystemExit as exc:
             io.emit(str(exc))
         finally:
@@ -154,10 +168,18 @@ PAGE = """
 <!doctype html>
 <title>Agentic Dev Team Lab</title>
 <style>
-  body { font-family: monospace; max-width: 860px; margin: 2rem auto; }
-  pre { white-space: pre-wrap; background: #f4f4f4; padding: 1rem; }
+  body { font-family: monospace; max-width: 1200px; margin: 2rem auto; }
+  pre { white-space: pre-wrap; background: #f4f4f4; padding: 1rem; margin: 0.5rem 0 0; }
   textarea { width: 100%; height: 4rem; }
   button { padding: 0.5rem 1rem; margin-right: 0.5rem; }
+  .columns { display: flex; gap: 1.5rem; align-items: flex-start; }
+  .columns > div { flex: 1; min-width: 0; }
+  h2 { font-size: 1rem; border-bottom: 1px solid #ccc; padding-bottom: 0.25rem; }
+  .stage { border: 1px solid #ddd; border-radius: 4px; padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; }
+  .stage-name { font-weight: bold; }
+  .status-running::after { content: " \\2022 running"; color: #b58900; }
+  .status-done::after { content: " \\2713 done"; color: #2a2; }
+  #log { max-height: 80vh; overflow-y: auto; }
 </style>
 <h1>Agentic Dev Team Lab</h1>
 <div id="start">
@@ -165,10 +187,19 @@ PAGE = """
   <label><input type="checkbox" id="autonomous"> Run autonomously (auto-approve plan &amp; design gates)</label><br>
   <button onclick="startRun()">Start</button>
 </div>
-<pre id="log"></pre>
 <div id="approval" style="display:none">
   <p id="approval-text"></p>
   <div id="approval-buttons"></div>
+</div>
+<div class="columns">
+  <div>
+    <h2>Pipeline</h2>
+    <div id="stages"></div>
+  </div>
+  <div>
+    <h2>Activity log</h2>
+    <pre id="log"></pre>
+  </div>
 </div>
 <script>
 let pendingId = null;
@@ -212,10 +243,29 @@ function renderButtons(text) {
     container.appendChild(b);
   }
 }
+function renderStages(stages) {
+  const container = document.getElementById('stages');
+  container.innerHTML = '';
+  for (const stage of stages) {
+    const div = document.createElement('div');
+    div.className = 'stage';
+    const title = document.createElement('div');
+    title.className = 'stage-name status-' + stage.status;
+    title.textContent = stage.name;
+    div.appendChild(title);
+    if (stage.output) {
+      const pre = document.createElement('pre');
+      pre.textContent = stage.output;
+      div.appendChild(pre);
+    }
+    container.appendChild(div);
+  }
+}
 async function poll() {
   const res = await fetch('/state');
   const state = await res.json();
   document.getElementById('log').textContent = state.log.join('\\n');
+  renderStages(state.stages);
   if (state.pending_prompt) {
     pendingId = state.pending_id;
     document.getElementById('approval-text').textContent = state.pending_prompt;
@@ -256,9 +306,9 @@ def start():
 def state():
     io = run_state["io"]
     if io is None:
-        return jsonify(log=[], pending_prompt=None, pending_id=None, done=True)
+        return jsonify(log=[], stages=[], pending_prompt=None, pending_id=None, done=True)
     with io.lock:
-        return jsonify(log=list(io.log), pending_prompt=io.pending_prompt,
+        return jsonify(log=list(io.log), stages=list(io.stages), pending_prompt=io.pending_prompt,
                         pending_id=io.pending_id, done=io.done)
 
 
