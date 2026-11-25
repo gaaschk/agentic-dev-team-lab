@@ -20,16 +20,18 @@ class AgentRetry:
         self.auto_retries_left = auto_retries
 
     def run(self, stage, attempt, *, stopped=None, auto_retryable=False):
-        """Run a safe operation; the operations agent may silently retry once,
-        for the whole run, a timeout on a stage marked safe to repeat. Anything
-        else recoverable (malformed output, HTTP errors) only asks a human."""
+        """Run a safe operation; the operations agent may silently retry a
+        timeout on a stage marked safe to repeat, spending from a budget
+        shared across the whole run. Anything else recoverable (malformed
+        output, HTTP errors) only asks a human."""
         try:
             return attempt(None)
         except RetryableAgentError as failure:
             self.emit(str(failure))
             if auto_retryable and self.auto_retries_left > 0 and isinstance(failure, TransientTimeout):
                 self.auto_retries_left -= 1
-                self.emit(f"[operations] {stage} timed out. Auto-retrying (run's one automatic retry).")
+                self.emit(f"[operations] {stage} timed out. Auto-retrying "
+                           f"({self.auto_retries_left} automatic retries left this run).")
                 try:
                     return attempt(failure)
                 except RetryableAgentError as retry_failure:
