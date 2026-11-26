@@ -16,7 +16,10 @@ from .agent_retry import RetryableAgentError
 from .model_config import resolve_model
 from .workbench import Workbench, home_for, step_format
 
-RUNAWAY_LIMIT = 25    # catches a looping agent; not a retry budget
+# Run-wide hard stop: no retry path can reset these. The agent decides how
+# many retries a failure is worth within them; they aren't a retry count.
+RECOVERY_SECONDS = 1800  # failed-call time plus retry waits; LAB_OPERATIONS_RECOVERY_SECONDS
+MAX_FAILED_CALLS = 100
 FALLBACK_ATTEMPTS = 3  # only when the operations model can't be consulted
 SLOW_SECONDS = 60
 HISTORY_LIMIT = 20
@@ -57,6 +60,8 @@ class Operations:
         self.workspace = self.bench.workspace
         self.autonomous = autonomous
         self.stage_retries = 0
+        self.recovery_seconds = 0.0
+        self.recovery_limit = float(os.getenv("LAB_OPERATIONS_RECOVERY_SECONDS") or RECOVERY_SECONDS)
         self.history = []
         self.reroute = {}  # failing route -> replacement, for the rest of the run
 
@@ -72,7 +77,10 @@ class Operations:
         failures = sum(1 for h in self.history if h["outcome"] != "ok")
         context = {**situation, "history": self.history[-HISTORY_LIMIT:],
                    "run_totals": {"model_calls": len(self.history), "failed_calls": failures,
-                                  "stage_retries": self.stage_retries},
+                                  "max_failed_calls": MAX_FAILED_CALLS,
+                                  "stage_retries": self.stage_retries,
+                                  "recovery_seconds_used": round(self.recovery_seconds, 1),
+                                  "recovery_seconds_limit": self.recovery_limit},
                    "available_routes": self.routes}
 
         def ask(system, task, **kwargs):
@@ -137,10 +145,10 @@ class Operations:
                                      "outcome": str(failure)})
                 if not self.autonomous:
                     raise  # someone is watching: the human retry gate decides
-                if attempt >= RUNAWAY_LIMIT:
-                    self.emit(f"[operations] {stage}: hit the {RUNAWAY_LIMIT}-attempt safety ceiling.")
-                    self.think({"situation": "gave_up", "stage": stage,
-                                "note": "Record what was tried and that it failed."})
+                self.recovery_seconds += seconds
+                if self.exhausted():
+                    self.emit(f"[operations] {stage}: run-wide recovery limit reached "
+                              f"({self.limit_text()}); not retrying.")
                     raise
                 decision = self.think({
                     "situation": "call_failed", "stage": stage, "route": route,
@@ -165,6 +173,7 @@ class Operations:
                 self.emit(f"[operations] {stage} failed on {route}: {decision['reason']} "
                           f"Retrying on {self.route_for(primary)} in {decision['wait']}s "
                           f"(timeout {timeout}s, attempt {attempt + 1}).")
+                self.recovery_seconds += decision["wait"]
                 self.sleep(decision["wait"])
                 continue
             seconds = round(self.clock() - started, 1)
@@ -180,14 +189,27 @@ class Operations:
                     self.switch(route, decision["route"], decision["reason"])
             return answer
 
+    def failed_calls(self):
+        return sum(1 for h in self.history if h["outcome"] != "ok")
+
+    def exhausted(self):
+        return self.recovery_seconds >= self.recovery_limit or self.failed_calls() >= MAX_FAILED_CALLS
+
+    def limit_text(self):
+        return (f"{self.recovery_seconds:.0f}s of {self.recovery_limit:.0f}s recovery time, "
+                f"{self.failed_calls()} of {MAX_FAILED_CALLS} failed calls")
+
     def stage_failed(self, recent_log):
         """Decide the stage-level retry gate in an autonomous run: 'r' or 's'.
         The agent decides how many stage retries are worth it; without a usable
         decision, or at the safety ceiling, the run stops cleanly."""
-        self.stage_retries += 1
-        if self.stage_retries > RUNAWAY_LIMIT:
-            self.emit(f"[operations] Stopping the run: hit the {RUNAWAY_LIMIT}-retry safety ceiling.")
+        if self.exhausted():
+            self.emit(f"[operations] Stopping the run: run-wide recovery limit reached ({self.limit_text()}).")
+            self.think({"situation": "gave_up", "recent_log": recent_log[-8:],
+                        "note": "The run-wide recovery limit stopped this run. Record what was "
+                                "tried and that it failed."})
             return "s"
+        self.stage_retries += 1
         decision = self.think({"situation": "stage_failed", "recent_log": recent_log[-8:],
                                "stage_retries_this_run": self.stage_retries - 1})
         if decision is None:

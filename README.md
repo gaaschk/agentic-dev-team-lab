@@ -122,8 +122,12 @@ Before deciding, it can investigate with its workbench tools (see below), and
 after a recovery works or it gives up, it records the outcome in its memory.
 
 Hard limits that stay in code:
-- A safety ceiling of 25 attempts per call, and 25 stage retries per run.
-  This catches an agent stuck in a loop; it isn't a retry budget.
+- One run-wide hard stop that no retry path can reset: 30 minutes of
+  recovery time (time spent in failed calls plus retry waits;
+  `LAB_OPERATIONS_RECOVERY_SECONDS` to change it) or 100 failed model calls,
+  whichever comes first. After that, nothing is retried and the run stops.
+  Healthy work doesn't count toward it, and the agent sees how much it has
+  used. It catches an agent stuck in a loop; it isn't a retry count.
 - Only routes the router lists are accepted; waits and timeouts are clamped.
 - If its own model can't be reached (30s timeout per step), a call gets at
   most 3 attempts with backoff, and a failed stage stops the run cleanly.

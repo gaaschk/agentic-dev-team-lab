@@ -6,7 +6,7 @@ from unittest import TestCase
 from unittest.mock import Mock, patch
 
 from team_agents.agent_retry import RetryableAgentError, TransientTimeout
-from team_agents.operations import FALLBACK_ATTEMPTS, RUNAWAY_LIMIT, Operations
+from team_agents.operations import FALLBACK_ATTEMPTS, MAX_FAILED_CALLS, Operations
 
 
 def step(tool, path="", content="", command=""):
@@ -80,13 +80,27 @@ class OperationsTests(TestCase):
         self.assertEqual(second["attempt"], 2)
         self.assertEqual(second["run_totals"]["failed_calls"], 2)
 
-    def test_safety_ceiling_stops_an_agent_that_never_gives_up(self):
+    def test_run_wide_failed_call_limit_stops_an_agent_that_never_gives_up(self):
         decide = Mock(side_effect=TransientTimeout("slow."))
         ops, log = make(decide, Mock(return_value=decision("retry")))
         with self.assertRaises(TransientTimeout):
             ops("r", "t", model="m")
-        self.assertEqual(decide.call_count, RUNAWAY_LIMIT)
-        self.assertTrue(any("safety ceiling" in line for line in log))
+        self.assertEqual(decide.call_count, MAX_FAILED_CALLS)
+        self.assertTrue(any("recovery limit reached" in line for line in log))
+        # The limit is run-wide: a new call (a replayed stage) can't reset it.
+        decide.reset_mock()
+        with self.assertRaises(TransientTimeout):
+            ops("r", "t", model="m")
+        self.assertEqual(decide.call_count, 1)
+        self.assertEqual(ops.stage_failed(["x"]), "s")
+
+    def test_run_wide_recovery_time_limit_counts_waits(self):
+        decide = Mock(side_effect=TransientTimeout("slow."))
+        with patch.dict(os.environ, {"LAB_OPERATIONS_RECOVERY_SECONDS": "100"}):
+            ops, _ = make(decide, Mock(return_value=decision("retry", wait=40)))
+        with self.assertRaises(TransientTimeout):
+            ops("r", "t", model="m")
+        self.assertEqual(decide.call_count, 4)  # 3 waits of 40s total 120s, so the 4th failure stops it
 
     def test_without_its_model_it_falls_back_to_a_short_fixed_policy(self):
         decide = Mock(side_effect=TransientTimeout("slow."))

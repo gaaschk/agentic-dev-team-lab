@@ -174,11 +174,12 @@ class RetryLayeringTests(TestCase):
         from workflows.runner import Step, run
         webapp = self.webapp
         counts = {"primary": 0, "primary_before_prompt": None}
-        advisor = list(advisor)
+        always = advisor if isinstance(advisor, str) else None
+        advisor = [] if always else list(advisor)
 
         def ask(role, task, *, stage, **kwargs):
             if stage == "Operations":
-                return advisor.pop(0)
+                return always or advisor.pop(0)
             if stage.endswith(" memory"):
                 return json.dumps({"tool": "decide", "path": "", "content": "", "command": "",
                                    "notes": ""})
@@ -228,3 +229,12 @@ class RetryLayeringTests(TestCase):
             _ops_decision("give_up"),   # stage gate: stop
         ])
         self.assertEqual(counts["primary"], 2)
+
+    def test_an_advisor_that_always_retries_is_stopped_by_the_run_wide_limit(self):
+        """Regression: per-call and per-stage ceilings used to reset on every
+        stage replay and compound (25 x 26 = 650 calls)."""
+        from team_agents.agent_retry import TransientTimeout
+        from team_agents.operations import MAX_FAILED_CALLS
+        counts = self.run_stage(autonomous=True, failure=TransientTimeout("slow."),
+                                advisor=_ops_decision("retry"))
+        self.assertEqual(counts["primary"], MAX_FAILED_CALLS)
