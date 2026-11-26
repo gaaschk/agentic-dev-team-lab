@@ -1,8 +1,9 @@
 import json
+import os
 import tempfile
 from pathlib import Path
 from unittest import TestCase
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from team_agents.agent_retry import RetryableAgentError, TransientTimeout
 from team_agents.operations import MAX_ATTEMPTS, Operations
@@ -143,5 +144,6 @@ class OperationsToolTests(TestCase):
         decide = Mock(side_effect=[TransientTimeout("slow."), "ok"])
         advisor = Mock(return_value=decision("switch_route", "smart-anthropic"))
         ops, _ = make(decide, advisor)
-        ops("r", "t", model="smart-auto")
+        with patch.dict(os.environ, {"LAB_OPERATIONS_MODEL": "smart-auto"}):
+            ops("r", "t", model="smart-auto")
         self.assertEqual(advisor.call_args_list[-1].kwargs["model"], "smart-anthropic")
