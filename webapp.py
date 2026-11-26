@@ -21,7 +21,7 @@ from plan_release import ask_role
 from team_agents.agent_retry import AgentRetry
 from team_agents.implementer_agent import is_safe_relative_path
 from team_agents.markdown import render_document
-from team_agents.operations import Operations
+from team_agents.operations import Operations, list_routes
 from team_agents.role_agents import run as native_artifacts
 from team_agents.reviewer_agent import ask_agent_reviewer
 from workflows.release import release_workflow
@@ -127,15 +127,15 @@ def make_approval_prompt(io, autonomous):
     return prompt
 
 
-def make_retry_prompt(io, autonomous):
-    """Keep the operations agent working through a failure when autonomous
-    mode is on, instead of blocking on a human click: retry all for the rest
-    of this run rather than stopping. Non-autonomous runs still ask."""
+def make_retry_prompt(io, autonomous, ops):
+    """In an autonomous run the operations agent decides a stage failure
+    (retry, reroute, or stop) instead of blocking on a human click."""
 
     def prompt(text):
         if autonomous:
-            io.emit(f"[autonomous] {text.strip()} a")
-            return "a"
+            with io.lock:
+                recent = list(io.log)
+            return ops.stage_failed(recent)
         return io.prompt(text)
 
     return prompt
@@ -240,14 +240,15 @@ def start_run(goal, *, autonomous=False, output_dir=None):
         if run_dir:
             io.emit(f"[operations] Writing this run's output to {run_dir}")
         try:
-            ops = Operations(ask_role, emit=io.emit)
+            ops = Operations(ask_role, emit=io.emit, routes=list_routes(),
+                             advisor=lambda role, task, **kw: ask_role(role, task, timeout=30, **kw))
             workflow = release_workflow(
                 decide=ops,
                 review=lambda *a: ask_agent_reviewer(*a, decide=ops),
                 artifact_runner=native_artifacts,
             )
             io.seed_stages([node.name for node in workflow if isinstance(node, Step)])
-            retry = AgentRetry(prompt=make_retry_prompt(io, autonomous), emit=io.emit, auto_retries=1)
+            retry = AgentRetry(prompt=make_retry_prompt(io, autonomous, ops), emit=io.emit, auto_retries=1)
             approve = make_approval_prompt(io, autonomous)
             run_workflow(workflow, {"goal": goal}, retry=retry, prompt=approve, emit=io.emit,
                          on_start=io.start_stage, on_output=on_output)
