@@ -27,8 +27,8 @@ step; set "tool" to one of:
 - "list_files": list your workspace.
 - "read_file" / "write_file": a file in your workspace ("path" relative,
   "content" for writes).
-- "run_command": a shell command ("command"), run in your workspace. Only
-  works when shell_enabled is true.
+- "run_command": a shell command ("command"), run in your workspace. Offered
+  only when shell_enabled is true.
 - "decide": you're done with tools for now.
 Leave fields a tool doesn't use as "" or 0.
 
@@ -125,6 +125,9 @@ class Workbench:
         None, observations). Exceptions from ask() propagate to the caller."""
         self.workspace.mkdir(parents=True, exist_ok=True)
         context = {**context, "shell_enabled": self.shell}
+        if not self.shell:  # don't offer a tool that can only fail
+            fmt = json.loads(json.dumps(fmt))
+            fmt["json_schema"]["schema"]["properties"]["tool"]["enum"].remove("run_command")
         observations = []
         for _ in range(MAX_TOOL_STEPS):
             step = json.loads(ask(role + GUIDE, json.dumps({**context, "observations": observations}),
@@ -183,6 +186,8 @@ class Team:
     def prepare(self, stage, role, task):
         if self.memory_down:
             return ""
+        if not any(p.is_file() for p in self.bench(stage).workspace.rglob("*")):
+            return ""  # nothing remembered yet, so don't spend model calls looking
         context = {
             "situation": "before_answering",
             "task": clip(task, CONTEXT_LIMIT),

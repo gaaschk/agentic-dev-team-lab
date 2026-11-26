@@ -32,9 +32,11 @@ class TeamTests(TestCase):
         patcher = patch.dict(os.environ, {"LAB_AGENTS_HOME": self.home})
         patcher.start()
         self.addCleanup(patcher.stop)
+        for name in ("product-lead", "architect", "qa", "implementer", "reviewer"):
+            (Path(self.home) / name).mkdir()
+            (Path(self.home) / name / "memory.md").write_text("")
 
     def test_agent_reads_memory_and_its_notes_reach_the_final_task(self):
-        (Path(self.home) / "architect").mkdir()
         (Path(self.home) / "architect" / "lessons.md").write_text("Keep designs to one module.")
         decide = FakeDecide([step("read_file", path="lessons.md"),
                              step("decide", notes="Prefer a single module.")])
@@ -115,3 +117,17 @@ class TeamTests(TestCase):
         team.reflect({})
         self.assertIn("[QA] Recorded nothing to memory this run.", log)
 
+    def test_an_agent_with_no_memory_yet_answers_straight_away(self):
+        (Path(self.home) / "qa" / "memory.md").unlink()
+        decide = FakeDecide([])
+        team = Team(decide, emit=lambda t: None, shell=False)
+        team("role", "t", stage="QA", model="m")
+        self.assertEqual([c[0] for c in decide.calls], ["QA"])
+        self.assertIn("QA", team.notes)  # it still records lessons when the run ends
+
+    def test_the_shell_tool_is_only_offered_when_the_shell_is_on(self):
+        for shell in (False, True):
+            decide = FakeDecide([step("decide")])
+            Team(decide, emit=lambda t: None, shell=shell)("role", "t", stage="QA", model="m")
+            schema = decide.calls[0][2]["response_format"]["json_schema"]["schema"]
+            self.assertEqual("run_command" in schema["properties"]["tool"]["enum"], shell)

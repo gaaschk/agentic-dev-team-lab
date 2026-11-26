@@ -145,9 +145,9 @@ Reviewer, and Operations) has its own persistent workspace under `.agents/`
 and it keeps its own memory of what it tried and what worked. It decides the
 format and structure itself. The shared code is `team_agents/workbench.py`.
 
-- **Before answering**, each agent checks its memory and can use its tools,
-  up to 8 steps. Its notes are added to its task. This happens once per stage
-  per run, not again on a retry.
+- **Before answering**, each agent that has anything in its workspace checks
+  its memory and can use its tools, up to 8 steps. Its notes are added to its
+  task. This happens once per stage per run, not again on a retry.
 - **When the run ends** (finished or stopped), each agent that ran is shown
   how the run went: each stage's status and output, approvals, the Reviewer's
   verdict, and recent log. It's asked to record lessons in its memory.
