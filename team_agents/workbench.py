@@ -13,6 +13,8 @@ from .implementer_agent import is_safe_relative_path
 from .profiles import load_profiles
 
 MAX_TOOL_STEPS = 8
+# Workspaces persist across runs, so the old copy goes first.
+FRESH_COPY = 'rm -rf under-test && cp -R "$RUN_WORKSPACE/proposal" under-test'
 COMMAND_TIMEOUT = 60
 OUTPUT_LIMIT = 6000
 CONTEXT_LIMIT = 20000  # a stage output or task shown to an agent's memory step
@@ -151,6 +153,8 @@ class Workbench:
             env = {k: v for k, v in os.environ.items()
                    if not k.endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD"))}
             if self.shell == "host":
+                if self.shared:
+                    env["RUN_WORKSPACE"] = str(self.shared.resolve())
                 done = subprocess.run(step["command"], shell=True, cwd=self.workspace, env=env,
                                       capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
             else:
@@ -299,10 +303,10 @@ class Team:
         if verify:
             context["instructions"] += (
                 " The proposed code is in run/proposal/. Before deciding, you must check it "
-                "with run_command: copy it into your own workspace (cp -R "
-                '"$RUN_WORKSPACE/proposal" .), then run its tests and try the approved behavior. '
-                "Running it in this sandbox is expected even if your role says not to execute "
-                "code. Report in 'notes' what you ran and what actually happened.")
+                f"with run_command: make a fresh copy in your own workspace ({FRESH_COPY}), "
+                "then, inside under-test/, run its tests and try the approved behavior. "
+                "Running it here is expected even if your role says not to execute code. "
+                "Report in 'notes' what you ran and what actually happened.")
         try:
             step, observations = bench.loop(self._ask(stage, self.models[stage]), role, context,
                                             fmt=PREP_FORMAT, emit=self.emit, label=stage,

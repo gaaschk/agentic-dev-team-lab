@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from team_agents.workbench import Team
+from team_agents.workbench import FRESH_COPY, Team, Workbench
 
 
 def step(tool, path="", content="", notes=""):
@@ -173,3 +173,16 @@ class TeamTests(TestCase):
         Team(decide, emit=lambda t: None, shell=False, shared=shared)(
             "role", "t", stage="Reviewer", model="m")
         self.assertEqual([c[0] for c in decide.calls], ["Reviewer memory", "Reviewer"])
+
+    def test_the_copy_under_test_is_fresh_even_in_a_used_workspace(self):
+        """Regression: copying over an earlier run's copy tested stale files."""
+        shared = Path(self.home) / "run"
+        (shared / "proposal").mkdir(parents=True)
+        (shared / "proposal" / "app.py").write_text("new")
+        stale = Path(self.home) / "qa" / "under-test"
+        stale.mkdir()
+        (stale / "old.py").write_text("old")
+        bench = Workbench(Path(self.home) / "qa", shell="host", shared=shared)
+        ok, result = bench.run_tool({"tool": "run_command", "command": FRESH_COPY})
+        self.assertEqual((ok, result), (True, "exit 0\n"))
+        self.assertEqual([p.name for p in stale.iterdir()], ["app.py"])
