@@ -145,6 +145,20 @@ class StartRunOutputErrorTests(TestCase):
             self.assertEqual(webapp.make_retry_prompt(io, False, ops)("QA failed."), "r")
             human.assert_called_once()
 
+    def test_run_record_keeps_whole_outputs_and_marks_any_cut(self):
+        """Regression: outputs were silently cut at 1500 characters, so QA
+        recorded criteria it never saw as uncovered."""
+        webapp = self.webapp
+        io = webapp.WebIO()
+        io.seed_stages(["QA", "Implementer"])
+        for name, output in (("QA", "x" * 5000 + "criterion 3"),
+                             ("Implementer", "y" * (webapp.CONTEXT_LIMIT + 1))):
+            io.start_stage(name)
+            io.finish_stage(name, output, True)
+        qa, implementer = (s["output"] for s in webapp.run_record(io)["stages"])
+        self.assertTrue(qa.endswith("criterion 3"))
+        self.assertIn("truncated", implementer)
+
     def test_output_dir_must_be_a_string(self):
         client = self.webapp.app.test_client()
         res = client.post("/start", json={"goal": "x", "output_dir": 123})

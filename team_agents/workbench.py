@@ -13,6 +13,7 @@ from .implementer_agent import is_safe_relative_path
 MAX_TOOL_STEPS = 8
 COMMAND_TIMEOUT = 60
 OUTPUT_LIMIT = 6000
+CONTEXT_LIMIT = 20000  # a stage output or task shown to an agent's memory step
 AGENTS_HOME = Path(__file__).resolve().parents[1] / ".agents"
 
 TOOLS = ["list_files", "read_file", "write_file", "run_command", "decide"]
@@ -66,8 +67,10 @@ def step_format(name, extra=None):
     }
 
 
-def _clip(text):
-    return text if len(text) <= OUTPUT_LIMIT else text[:OUTPUT_LIMIT] + "\n…(truncated)"
+def clip(text, limit=OUTPUT_LIMIT):
+    # Say so when cutting: an agent otherwise records the missing part as missing work.
+    return text if len(text) <= limit else (
+        text[:limit] + "\n…(truncated here for length; the original continues)")
 
 
 class Workbench:
@@ -92,7 +95,7 @@ class Workbench:
                                if p.is_file())
                 return "\n".join(files[:200]) or "(workspace is empty)"
             if tool == "read_file":
-                return _clip(self._path(step["path"]).read_text(encoding="utf-8"))
+                return clip(self._path(step["path"]).read_text(encoding="utf-8"))
             if tool == "write_file":
                 target = self._path(step["path"])
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -103,7 +106,7 @@ class Workbench:
                     return "shell commands are disabled (the operator can set LAB_AGENT_SHELL=1)"
                 done = subprocess.run(step["command"], shell=True, cwd=self.workspace,
                                       capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
-                return _clip(f"exit {done.returncode}\n{done.stdout}{done.stderr}")
+                return clip(f"exit {done.returncode}\n{done.stdout}{done.stderr}")
         except subprocess.TimeoutExpired:
             return f"command timed out after {COMMAND_TIMEOUT}s"
         except (OSError, ValueError, UnicodeDecodeError) as exc:
@@ -175,7 +178,7 @@ class Team:
             return ""
         context = {
             "situation": "before_answering",
-            "task": task[:4000],
+            "task": clip(task, CONTEXT_LIMIT),
             "instructions": "This is a short preparation step, not your answer. Check your "
                             "memory for lessons relevant to this task, then decide, putting "
                             "anything useful in 'notes' (or leave it empty). Your workspace is "
