@@ -100,7 +100,7 @@ class OperationsTests(TestCase):
             ops, _ = make(decide, Mock(return_value=decision("retry", wait=40)))
         with self.assertRaises(TransientTimeout):
             ops("r", "t", model="m")
-        self.assertEqual(decide.call_count, 4)  # 3 waits of 40s total 120s, so the 4th failure stops it
+        self.assertEqual(decide.call_count, 3)  # a 3rd 40s wait would total 120s, so no 4th request
 
     def test_without_its_model_it_falls_back_to_a_short_fixed_policy(self):
         decide = Mock(side_effect=TransientTimeout("slow."))
@@ -205,3 +205,15 @@ class OperationsToolTests(TestCase):
         self.assertEqual(choices[:-1], ["r"] * (MAX_FAILURES - 1))
         self.assertEqual(choices[-1], "s")
         self.assertTrue(any("recovery limit reached" in line for line in log))
+
+    def test_a_wait_that_uses_up_the_recovery_time_starts_no_new_request(self):
+        decide = Mock(side_effect=TransientTimeout("slow."))
+        slept = []
+        with patch.dict(os.environ, {"LAB_OPERATIONS_RECOVERY_SECONDS": "100"}):
+            ops, log = make(decide, Mock(return_value=decision("retry", wait=100)))
+        ops.sleep = slept.append
+        with self.assertRaises(TransientTimeout):
+            ops("r", "t", model="m")
+        self.assertEqual(decide.call_count, 1)
+        self.assertEqual(slept, [])
+        self.assertTrue(any("would reach the run-wide recovery limit" in line for line in log))

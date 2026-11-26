@@ -176,6 +176,10 @@ class Operations:
                           f"Retrying on {self.route_for(primary)} in {decision['wait']}s "
                           f"(timeout {timeout}s, attempt {attempt + 1}).")
                 self.recovery_seconds += decision["wait"]
+                if self.exhausted():
+                    self.emit(f"[operations] {stage}: the {decision['wait']}s wait would reach the "
+                              f"run-wide recovery limit ({self.limit_text()}); not retrying.")
+                    raise
                 self.sleep(decision["wait"])
                 continue
             seconds = round(self.clock() - started, 1)
