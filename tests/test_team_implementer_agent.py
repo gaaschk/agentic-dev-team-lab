@@ -15,6 +15,15 @@ class SafeRelativePathTests(TestCase):
         for path in ("/etc/passwd", "../outside.py", "src/../../outside.py", "", None, 3):
             self.assertFalse(is_safe_relative_path(path))
 
+    def test_rejects_dot_and_backslash_paths(self):
+        """Regression: "." is a no-op component that write_text() can't
+        handle (IsADirectoryError), and a backslash means a path separator
+        to the platform Path used for writing but not to the PurePosixPath
+        used here to validate — accepting one let Windows-style traversal
+        like "src\\..\\escape.py" slip past this check."""
+        for path in (".", "./", "src\\..\\escape.py", "src\\app.py"):
+            self.assertFalse(is_safe_relative_path(path))
+
 
 class ParseFilesTests(TestCase):
     def test_parses_a_valid_file_list(self):

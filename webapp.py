@@ -176,8 +176,12 @@ def write_implementation_files(run_dir, result, emit):
         if target != base and base not in target.parents:
             emit(f"[operations] Skipped file path escaping the output directory: {file['path']!r}")
             continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(file["content"], encoding="utf-8")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(file["content"], encoding="utf-8")
+        except OSError as exc:
+            emit(f"[operations] Could not write {file['path']!r}: {exc}")
+            continue
         emit(f"[operations] Wrote {target.relative_to(run_dir)}")
 
 
@@ -200,10 +204,17 @@ def start_run(goal, *, autonomous=False, output_dir=None):
 
     def on_output(name, result, rendered, ok):
         io.finish_stage(name, rendered, ok)
-        if run_dir and ok and result is not None:
-            write_stage_document(run_dir, name, result)
-            if name == "Implementer":
-                write_implementation_files(run_dir, result, io.emit)
+        if not run_dir:
+            return
+        try:
+            if ok and result is not None:
+                write_stage_document(run_dir, name, result)
+                if name == "Implementer":
+                    write_implementation_files(run_dir, result, io.emit)
+            else:
+                write_stage_document(run_dir, name, rendered)
+        except OSError as exc:
+            io.emit(f"[operations] Could not write output for {name}: {exc}")
 
     def worker():
         _thread_io[threading.get_ident()] = io
@@ -321,7 +332,8 @@ let following = true;
 let pendingId = null;
 let answering = false;
 let lastLogLength = 0;
-let lastRenderedOutput = {};
+let lastRenderedKey = null;
+let lastRenderedOutput = null;
 
 async function startRun() {
   const startButton = document.querySelector('#start button');
@@ -449,8 +461,9 @@ function renderDetail() {
   const hasOutput = stage && stage.output !== null && stage.output !== undefined;
   document.getElementById('copy-btn').style.display = hasOutput ? 'inline-block' : 'none';
   const raw = hasOutput ? stage.output : '(no output yet)';
-  if (lastRenderedOutput[selected] === raw) return;
-  lastRenderedOutput[selected] = raw;
+  if (lastRenderedKey === selected && lastRenderedOutput === raw) return;
+  lastRenderedKey = selected;
+  lastRenderedOutput = raw;
   document.getElementById('detail-output').textContent = hasOutput ? prettyOutput(raw) : raw;
 }
 
@@ -521,7 +534,10 @@ def index():
 @app.route("/start", methods=["POST"])
 def start():
     body = request.get_json()
-    output_dir = (body.get("output_dir") or "").strip() or None
+    output_dir = body.get("output_dir")
+    if output_dir is not None and not isinstance(output_dir, str):
+        return jsonify(ok=False, error="output_dir must be a string"), 400
+    output_dir = (output_dir or "").strip() or None
     started, error = start_run(body["goal"], autonomous=bool(body.get("autonomous")),
                                 output_dir=output_dir)
     return jsonify(ok=started, error=error), (200 if started else 409)

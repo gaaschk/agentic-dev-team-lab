@@ -36,11 +36,20 @@ FILE_FORMAT = {
 
 
 def is_safe_relative_path(path):
-    """Reject anything that isn't a plain relative path inside the output directory."""
-    if not path or not isinstance(path, str):
+    """Reject anything that isn't a plain relative path inside the output directory.
+
+    Backslashes are rejected outright rather than validated as path separators:
+    a path is checked with PurePosixPath, but written to disk with the
+    platform Path, and on Windows a backslash means something to the second
+    that it doesn't to the first — accepting one here would let a path like
+    "src\\..\\escape.py" pass this check and still escape on write."""
+    if not path or not isinstance(path, str) or "\\" in path:
         return False
-    parts = PurePosixPath(path).parts
-    return bool(parts) and not PurePosixPath(path).is_absolute() and ".." not in parts
+    posix = PurePosixPath(path)
+    if posix.is_absolute():
+        return False
+    parts = posix.parts
+    return bool(parts) and not any(part in (".", "..") for part in parts)
 
 
 def parse_files(raw):

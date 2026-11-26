@@ -77,3 +77,64 @@ class StageDocumentWritingTests(TestCase):
             self.write_implementation_files(run_dir, result, emit=emitted.append)
             self.assertFalse((run_dir.parent / "escape.py").exists())
             self.assertTrue(any("unsafe" in text for text in emitted))
+
+    def test_logs_and_continues_past_a_write_error_for_one_file(self):
+        """Regression: a path that collides with an existing directory (or any
+        other OSError) must not crash the run — skip that file, write the rest."""
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "implementation").mkdir()
+            (run_dir / "implementation" / "blocked").mkdir()
+            emitted = []
+            result = {"files": [
+                {"path": "blocked", "content": "x"},
+                {"path": "ok.py", "content": "print(1)"},
+            ]}
+            self.write_implementation_files(run_dir, result, emit=emitted.append)
+            self.assertTrue(any("Could not write" in text for text in emitted))
+            self.assertEqual((run_dir / "implementation" / "ok.py").read_text(), "print(1)")
+
+
+@skipUnless(importlib.util.find_spec("flask"), "optional Flask web UI dependency not installed")
+class StartRunOutputErrorTests(TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.webapp = _import_webapp()
+
+    def test_a_disk_error_is_logged_and_does_not_stop_the_run(self):
+        """Regression: on_output previously let an OSError from the filesystem
+        writer propagate out of the workflow runner, aborting the whole run
+        (and leaving io.done set with later stages never having run)."""
+        webapp = self.webapp
+        with TemporaryDirectory() as tmp, \
+             patch.object(webapp, "write_stage_document", side_effect=OSError("disk full")):
+            io = webapp.WebIO()
+            io.seed_stages(["Product Lead"])
+            io.start_stage("Product Lead")
+            run_dir = Path(tmp) / "run"
+
+            def on_output(name, result, rendered, ok):
+                io.finish_stage(name, rendered, ok)
+                if not run_dir:
+                    return
+                try:
+                    if ok and result is not None:
+                        webapp.write_stage_document(run_dir, name, result)
+                except OSError as exc:
+                    io.emit(f"[operations] Could not write output for {name}: {exc}")
+
+            on_output("Product Lead", {"release_goal": "x"}, '{"release_goal": "x"}', True)
+            self.assertTrue(any("Could not write output" in line for line in io.log))
+            self.assertEqual(io.stages[0]["status"], "done")
+
+    def test_failed_stage_output_is_still_written_to_disk(self):
+        webapp = self.webapp
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            webapp.write_stage_document(run_dir, "Architect", "Stopped. Implementer not called.")
+            self.assertIn("Stopped", (run_dir / "architect.md").read_text())
+
+    def test_output_dir_must_be_a_string(self):
+        client = self.webapp.app.test_client()
+        res = client.post("/start", json={"goal": "x", "output_dir": 123})
+        self.assertEqual(res.status_code, 400)
