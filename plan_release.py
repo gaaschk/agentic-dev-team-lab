@@ -61,6 +61,8 @@ def ask_role(role, goal, *, response_format=None, model=None, stage="Model", tim
                 raise SystemExit(diagnostic("router did not echo the request ID"))
             data = json.load(response)
             answer = data["choices"][0]["message"].get("content")
+            if not isinstance(answer, str):
+                raise RetryableAgentError(diagnostic("router returned no text content"))
             print(diagnostic("response received"), file=sys.stderr)
             return answer
     except HTTPError as exc:

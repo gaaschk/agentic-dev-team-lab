@@ -150,7 +150,7 @@ def build_runtime(io, autonomous, *, ask, routes=(), sleep=time.sleep):
     ops = Operations(ask, emit=io.emit, routes=routes, sleep=sleep, autonomous=autonomous,
                      advisor=lambda role, task, **kw: ask(role, task, timeout=30, **kw))
     team = Team(ops, emit=io.emit, memory=lambda role, task, *, model=None, **kw: ask(
-        role, task, model=ops.route_for(model), timeout=30, **kw))
+        role, task, model=ops.route_for(model), timeout=90, **kw))
     retry = AgentRetry(prompt=make_retry_prompt(io, autonomous, ops), emit=io.emit,
                        auto_retries=0 if autonomous else 1, ask_again=autonomous)
     return ops, team, retry
@@ -270,7 +270,7 @@ def start_run(goal, *, autonomous=False, output_dir=None):
             io.emit(str(exc))
         finally:
             try:
-                if team and team.notes:
+                if team and team.notes and not team.memory_down:
                     io.emit("[team] Agents are recording lessons from this run…")
                     with io.lock:
                         outcome = {
