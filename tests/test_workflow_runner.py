@@ -118,9 +118,10 @@ class WorkflowRunnerTests(TestCase):
             Step("Produce", (), "result", lambda failure: "value", render=lambda r: f"rendered:{r}"),
         )
         run(workflow, {}, retry=AgentRetry(), prompt=Mock(), emit=emitted.append,
-            on_start=started.append, on_output=lambda name, text: finished.append((name, text)))
+            on_start=started.append,
+            on_output=lambda name, result, text, ok: finished.append((name, result, text, ok)))
         self.assertEqual(started, ["Produce"])
-        self.assertEqual(finished, [("Produce", "rendered:value")])
+        self.assertEqual(finished, [("Produce", "value", "rendered:value", True)])
         self.assertEqual(emitted, [])
 
     def test_human_still_decides_once_auto_retries_are_exhausted(self):
@@ -148,5 +149,5 @@ class WorkflowRunnerTests(TestCase):
         with patch("builtins.input", return_value="s"):
             with self.assertRaisesRegex(SystemExit, "Stopped."):
                 run(workflow, {}, retry=AgentRetry(), prompt=Mock(), emit=Mock(),
-                    on_output=lambda name, text: finished.append((name, text)))
-        self.assertEqual(finished, [("Consume", "Stopped.")])
+                    on_output=lambda name, result, text, ok: finished.append((name, result, text, ok)))
+        self.assertEqual(finished, [("Consume", None, "Stopped.", False)])

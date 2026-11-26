@@ -1,20 +1,27 @@
 import importlib.util
+import json
 import os
 import sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase, skipUnless
 from unittest.mock import patch
+
+
+def _import_webapp():
+    # webapp replaces sys.stdout/stderr with tee wrappers at import time;
+    # restore the originals right after so other tests aren't affected.
+    real_stdout, real_stderr = sys.stdout, sys.stderr
+    import webapp
+    sys.stdout, sys.stderr = real_stdout, real_stderr
+    return webapp
 
 
 @skipUnless(importlib.util.find_spec("flask"), "optional Flask web UI dependency not installed")
 class OperationsPreflightTests(TestCase):
     @classmethod
     def setUpClass(cls):
-        # webapp replaces sys.stdout/stderr with tee wrappers at import time;
-        # restore the originals right after so other tests aren't affected.
-        real_stdout, real_stderr = sys.stdout, sys.stderr
-        import webapp
-        sys.stdout, sys.stderr = real_stdout, real_stderr
-        cls.operations_preflight = staticmethod(webapp.operations_preflight)
+        cls.operations_preflight = staticmethod(_import_webapp().operations_preflight)
 
     def test_reports_missing_environment(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -29,3 +36,105 @@ class OperationsPreflightTests(TestCase):
         env = {"SMART_ROUTER_URL": "http://example.com:notaport", "SMART_ROUTER_API_KEY": "key"}
         with patch.dict(os.environ, env, clear=True):
             self.assertIn("invalid port", self.operations_preflight())
+
+
+@skipUnless(importlib.util.find_spec("flask"), "optional Flask web UI dependency not installed")
+class StageDocumentWritingTests(TestCase):
+    @classmethod
+    def setUpClass(cls):
+        webapp = _import_webapp()
+        cls.write_stage_document = staticmethod(webapp.write_stage_document)
+        cls.write_implementation_files = staticmethod(webapp.write_implementation_files)
+
+    def test_writes_markdown_and_json_for_a_dict_result(self):
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            self.write_stage_document(run_dir, "Product Lead", {"release_goal": "Ship it."})
+            self.assertIn("Ship it.", (run_dir / "product-lead.md").read_text())
+            self.assertEqual(json.loads((run_dir / "product-lead.json").read_text()),
+                              {"release_goal": "Ship it."})
+
+    def test_writes_only_markdown_for_plain_text(self):
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            self.write_stage_document(run_dir, "Stopped", "Stopped. Architect not called.")
+            self.assertTrue((run_dir / "stopped.md").exists())
+            self.assertFalse((run_dir / "stopped.json").exists())
+
+    def test_materializes_proposed_files_under_implementation(self):
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            result = {"files": [{"path": "src/app.py", "content": "print(1)"}]}
+            self.write_implementation_files(run_dir, result, emit=lambda text: None)
+            written = run_dir / "implementation" / "src" / "app.py"
+            self.assertEqual(written.read_text(), "print(1)")
+
+    def test_refuses_to_write_outside_the_run_directory(self):
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            emitted = []
+            result = {"files": [{"path": "../escape.py", "content": "x"}]}
+            self.write_implementation_files(run_dir, result, emit=emitted.append)
+            self.assertFalse((run_dir.parent / "escape.py").exists())
+            self.assertTrue(any("unsafe" in text for text in emitted))
+
+    def test_logs_and_continues_past_a_write_error_for_one_file(self):
+        """Regression: a path that collides with an existing directory (or any
+        other OSError) must not crash the run — skip that file, write the rest."""
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "implementation").mkdir()
+            (run_dir / "implementation" / "blocked").mkdir()
+            emitted = []
+            result = {"files": [
+                {"path": "blocked", "content": "x"},
+                {"path": "ok.py", "content": "print(1)"},
+            ]}
+            self.write_implementation_files(run_dir, result, emit=emitted.append)
+            self.assertTrue(any("Could not write" in text for text in emitted))
+            self.assertEqual((run_dir / "implementation" / "ok.py").read_text(), "print(1)")
+
+
+@skipUnless(importlib.util.find_spec("flask"), "optional Flask web UI dependency not installed")
+class StartRunOutputErrorTests(TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.webapp = _import_webapp()
+
+    def test_a_disk_error_is_logged_and_does_not_stop_the_run(self):
+        """Regression: on_output previously let an OSError from the filesystem
+        writer propagate out of the workflow runner, aborting the whole run
+        (and leaving io.done set with later stages never having run)."""
+        webapp = self.webapp
+        with TemporaryDirectory() as tmp, \
+             patch.object(webapp, "write_stage_document", side_effect=OSError("disk full")):
+            io = webapp.WebIO()
+            io.seed_stages(["Product Lead"])
+            io.start_stage("Product Lead")
+            run_dir = Path(tmp) / "run"
+
+            def on_output(name, result, rendered, ok):
+                io.finish_stage(name, rendered, ok)
+                if not run_dir:
+                    return
+                try:
+                    if ok and result is not None:
+                        webapp.write_stage_document(run_dir, name, result)
+                except OSError as exc:
+                    io.emit(f"[operations] Could not write output for {name}: {exc}")
+
+            on_output("Product Lead", {"release_goal": "x"}, '{"release_goal": "x"}', True)
+            self.assertTrue(any("Could not write output" in line for line in io.log))
+            self.assertEqual(io.stages[0]["status"], "done")
+
+    def test_failed_stage_output_is_still_written_to_disk(self):
+        webapp = self.webapp
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            webapp.write_stage_document(run_dir, "Architect", "Stopped. Implementer not called.")
+            self.assertIn("Stopped", (run_dir / "architect.md").read_text())
+
+    def test_output_dir_must_be_a_string(self):
+        client = self.webapp.app.test_client()
+        res = client.post("/start", json={"goal": "x", "output_dir": 123})
+        self.assertEqual(res.status_code, 400)

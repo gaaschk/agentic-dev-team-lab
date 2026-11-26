@@ -26,6 +26,8 @@ DESIGN = {
     "blockers": [],
 }
 
+PROPOSAL = {"files": [{"path": "app.py", "content": "print('hello')"}]}
+
 
 class Response(io.StringIO):
     def __init__(self, memory_mode):
@@ -78,7 +80,8 @@ class ReleaseTests(unittest.TestCase):
 
     def test_valid_approved_plan_and_design_reach_review(self):
         result, calls, prompts, output = self.run_workflow(
-            [json.dumps(PLAN), json.dumps(DESIGN), "A proposal", '{"verdict":"PASS","blockers":[]}'], ["y", "y"]
+            [json.dumps(PLAN), json.dumps(DESIGN), json.dumps(PROPOSAL), '{"verdict":"PASS","blockers":[]}'],
+            ["y", "y"],
         )
         self.assertIsNone(result)
         self.assertEqual(prompts, 2)
@@ -88,8 +91,8 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(sent["approved_design"], DESIGN)
         reviewed = json.loads(calls[3].args[1].split("\n\n", 1)[1])
         self.assertEqual(reviewed["criteria"], {"plan": PLAN, "design": DESIGN})
-        self.assertEqual(reviewed["candidate"], "A proposal")
-        self.assertIn("A proposal", output)
+        self.assertEqual(reviewed["candidate"], PROPOSAL)
+        self.assertIn("app.py", output)
         self.assertIn("PASS", output)
 
     def test_invalid_design_never_reaches_design_approval(self):
@@ -135,7 +138,7 @@ class ReleaseTests(unittest.TestCase):
         result, calls, prompts, output = self.run_workflow(
             ["broken", json.dumps(PLAN),
              plan_release.RetryableAgentError("timed out"), json.dumps(DESIGN),
-             None, "A proposal", "not JSON", good_review],
+             None, json.dumps(PROPOSAL), "not JSON", good_review],
             ["a", "y", "y"],
         )
         self.assertIsNone(result)
@@ -159,7 +162,7 @@ class ReleaseTests(unittest.TestCase):
             {"file": "app.py", "evidence": "No save call.", "consequence": "Data is lost."}
         ]})
         result, calls, prompts, output = self.run_workflow(
-            ["broken", json.dumps(PLAN), json.dumps(DESIGN), "A proposal", verdict], ["a", "y", "y"]
+            ["broken", json.dumps(PLAN), json.dumps(DESIGN), json.dumps(PROPOSAL), verdict], ["a", "y", "y"]
         )
         self.assertIsNone(result)
         self.assertEqual((len(calls), prompts), (5, 3))

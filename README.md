@@ -2,7 +2,7 @@
 
 This project is a reusable AI software team. It takes a product brief and
 produces a release plan, technical design, independent QA plan, implementation
-preview, and code review. The reading-list app is an example, not part of the
+files, and code review. The reading-list app is an example, not part of the
 team's runtime.
 
 ## Run the team
@@ -27,8 +27,9 @@ python3 -B plan_release.py --example reading-list
 3. **QA** reads the approved scope, numbered acceptance criteria, and public
    interface, but not the implementation. It proposes at least one black-box
    check per criterion: setup, action, and observable expected result.
-4. The **Implementer** previews the proposed files. The runner does not save or run them.
-5. The **Reviewer** reads the exact preview and approved criteria and reports code blockers.
+4. The **Implementer** proposes a structured list of files (path and content each),
+   validated so every path is relative and can't escape the output location.
+5. The **Reviewer** reads the exact proposal and approved criteria and reports code blockers.
 
 QA plans are **not test results**. The generic workflow never runs model-proposed
 commands or code. Actual pass/fail evidence must come from a separately wired,
@@ -37,13 +38,21 @@ shows that separation with its own sandboxed runner and execution approval.
 
 The baseline runner is linear, synchronous, and in memory. It doesn't save
 checkpoints or resume after the process exits. No agent decides whether to
-bypass an approval or execute a proposal.
+bypass an approval; whether the Implementer's proposed files are ever written
+to disk is a human-configured, host-level decision (see Web UI below), not
+something an agent or the generic runner does on its own. The CLI and the
+`openai`/`crewai` runtimes never write the proposal to disk — it stays an
+in-memory preview there.
 
 ## Web UI (v1, minimal)
 
 `webapp.py` runs the same native workflow behind a single-page Flask UI:
 type a goal, approve/reject the plan and design in the browser, and watch
-each role's output stream in. One run at a time, native runtime only.
+each role's progress in a pipeline list on the left (click any finished
+agent to see its full output; it auto-follows whichever stage is currently
+running until you click one yourself, with a "follow run" checkbox to
+re-enable that). A separate, collapsed "Activity log" holds the raw
+tool-call/timing chatter. One run at a time, native runtime only.
 
 ```sh
 ./run.sh
@@ -59,6 +68,20 @@ the CLI.
 (git-ignored), in addition to the terminal, so activity can be inspected
 after the fact or from a session that isn't attached to that terminal —
 `tail -f webapp.log`.
+
+### Writing outputs to disk
+
+The start form has an optional "Write outputs to" field. Leave it blank and
+nothing is written — the run stays purely in-memory, same as the CLI. Set it
+(e.g. `./runs`) and each run gets its own timestamped subdirectory containing,
+for every stage that finishes: a `.md` file (a generic, readable rendering of
+that stage's JSON output — headings per field, bullet lists for arrays) and,
+for structured stages, the raw `.json` alongside it. **This is the one place
+in the lab that writes the Implementer's proposal to disk as real files**,
+under `<run>/implementation/`: every proposed path is validated twice (once
+when the Implementer's response is parsed, once again right before the write)
+to be relative and unable to escape that directory, and a path that fails
+either check is skipped with a logged reason instead of written anywhere.
 
 ## Retry or stop
 
@@ -118,8 +141,9 @@ The original scripted loan exercise is archived separately at
 The native runtime remains the default and has no third-party dependencies.
 `--workflow-runtime openai` runs all five roles with the OpenAI Agents SDK and
 includes QA planning automatically. The host still enforces both approval
-gates, artifact validation, and bounded retries. The workflow only previews
-implementation, never writes or runs it. SDK trace export is disabled; model
+gates, artifact validation, and bounded retries. This runtime only holds the
+Implementer's proposal in memory; it never writes or runs it (only the web
+UI's optional output location does that). SDK trace export is disabled; model
 requests go to your configured Smart AI Router.
 
 Install the optional SDK in a virtual environment:

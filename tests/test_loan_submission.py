@@ -53,7 +53,8 @@ class LoanSubmissionTests(TestCase):
             dict(criterion_id=i, name=name, setup=setup, action=action, expected=expected)
             for i, (name, setup, action, expected) in enumerate(scenarios, 1)
         ]}
-        candidate = "Review fixture: the implementation creates another event on retry."
+        candidate = {"files": [{"path": "submission.py",
+                                 "content": "Review fixture: creates another event on retry."}]}
         verdict = {"verdict": "CHANGES_REQUIRED", "blockers": [{
             "file": "submission.py", "evidence": "Increments the event count on replay.",
             "consequence": "The same application creates a duplicate event.",
@@ -85,6 +86,6 @@ class LoanSubmissionTests(TestCase):
             {"criterion_id": i, "requirement": criterion}
             for i, criterion in enumerate(CRITERIA, 1)
         ])
-        self.assertNotIn(candidate, qa_call.args[1])
+        self.assertNotIn(candidate["files"][0]["content"], qa_call.args[1])
         self.assertIn('"verdict": "CHANGES_REQUIRED"', output.getvalue())
         self.assertIn("QA plan only. No tests have run.", output.getvalue())
