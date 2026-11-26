@@ -51,12 +51,25 @@ def read_profile(path):
     return Profile(role, goal, parts.get("persona", ""), capabilities, text, phase)
 
 
+# Names the runner uses itself.
+_RESERVED = {"security_review"}
+
+
 def load_profiles():
-    return {
+    profiles = {
         path.stem: read_profile(path)
         for path in sorted(ROLES_DIR.glob("*.md"))
         if path.is_file() and not path.is_symlink()
     }
+    # An agent's title names its stage and memory folder, so no two may collide.
+    seen = {}
+    for key, profile in profiles.items():
+        name = re.sub(r"[^a-z0-9]+", "_", profile.role.casefold()).strip("_")
+        if name in seen or name in _RESERVED or name.endswith(("_memory", "_tool_choice")):
+            other = f" ({seen[name]}.md already uses it)" if name in seen else ""
+            raise ValueError(f"{key}.md needs a different title than {profile.role!r}{other}.")
+        seen[name] = key
+    return profiles
 
 
 def advisory_profiles():

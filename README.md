@@ -180,12 +180,13 @@ specialist, and Operations) has its own persistent workspace under `.agents/`
 (git-ignored; `LAB_AGENTS_HOME` to move it), for example
 `.agents/architect/`. Inside it, the agent can list, read, and write files,
 and it keeps its own memory of what it tried and what worked. It decides the
-format and structure itself. The shared code is `team_agents/workbench.py`.
+format and structure itself. The shared code is `team_agents/workbench.py` and
+`team_agents/sandbox.py`.
 
 - **Before answering**, each agent checks its memory and can use its tools,
   up to 8 steps. Its notes are added to its task. This happens once per stage
-  per run, not again on a retry. With the shell off, an agent with an empty
-  workspace skips this step.
+  per run, not again on a retry. With the shell off, an agent with nothing in
+  either workspace skips this step.
 - **When the run ends** (finished or stopped), each agent that ran is shown
   how the run went: each stage's status and output, approvals, the Reviewer's
   verdict, and recent log. It must save lessons to its memory before it can
@@ -198,17 +199,32 @@ format and structure itself. The shared code is `team_agents/workbench.py`.
   up on one, the agent answers without it and memory is off for the rest of
   that run.
 
-**Every agent can run shell commands** (60s limit each, every command and its
-output logged). Set `LAB_AGENT_SHELL=0` to turn this off. Commands **are not
-sandboxed**: they start in the agent's workspace folder, but run as your user
-with full access to your files and network, the same as anything you type in a
-terminal. Agents read text that partly comes from other models (plans,
-designs, error messages), so a crafted or mistaken message could lead one to
-run a harmful command on your machine. Their prompts tell them to treat that
-text as data, but a prompt is not a sandbox. Environment variables ending in
-`_KEY`, `_TOKEN`, `_SECRET`, or `_PASSWORD` are not passed to commands, which
-doesn't protect secrets stored in files. File tools are always limited to
-each agent's own workspace.
+**A shared workspace per run.** Paths starting with `run/` are in a folder the
+whole team can list, search, read, and write: `<run>/workspace/` when you set an
+output folder, otherwise a temporary folder removed after the run. The
+Implementer's proposed files are copied to `run/proposal/` so others can read
+and run them. Publishing never reads from this folder.
+
+**Shell commands run in the macOS sandbox** (60s limit each, every command and
+its output logged). A command can:
+
+- read and write only the agent's own workspace and the run's shared one, plus
+  read the system and developer tools it needs to run;
+- use the internet, but not services listening on this machine (so it can't
+  reach the web UI);
+- see none of your environment variables, keychain, or home folder.
+
+It can still reach other machines on your network, and anything an agent can
+read, it can also send over the internet. Agents are told not to, and a prompt
+is not a boundary. `sandbox-exec` is deprecated by Apple, though it still ships.
+
+`LAB_AGENT_SHELL=0` turns the shell off. Where the sandbox isn't available
+(for example off macOS), the shell is off. `LAB_AGENT_SHELL=host` explicitly
+opts in to an **unsandboxed** shell with your full access to files and network;
+only variables ending in `_KEY`, `_TOKEN`, `_SECRET`, or `_PASSWORD` are held
+back from it.
+
+Each agent's title must be unique, since it names the agent's stage and memory.
 
 Before starting any web UI run, the operations agent also checks the
 environment: `SMART_ROUTER_URL`/`SMART_ROUTER_API_KEY` are set and the router

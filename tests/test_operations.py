@@ -212,18 +212,21 @@ class OperationsToolTests(TestCase):
             self.assertTrue(result.startswith("error"))
         self.assertFalse((Path(ops.workspace).parent / "escape.txt").exists())
 
-    def test_shell_is_on_by_default_and_can_be_turned_off(self):
-        with patch.dict(os.environ, {}, clear=True):
-            self.assertTrue(make(Mock(), shell=None)[0].bench.shell)
-        with patch.dict(os.environ, {"LAB_AGENT_SHELL": "0"}):
-            self.assertFalse(make(Mock(), shell=None)[0].bench.shell)
+    def test_shell_is_sandboxed_by_default_and_the_host_shell_is_opt_in(self):
+        for setting, works, mode in ((None, True, "sandbox"), (None, False, False),
+                                     ("1", False, False), ("0", True, False),
+                                     ("host", False, "host")):
+            env = {} if setting is None else {"LAB_AGENT_SHELL": setting}
+            with patch.dict(os.environ, env, clear=True), \
+                 patch("team_agents.sandbox.available", return_value=works):
+                self.assertEqual(make(Mock(), shell=None)[0].bench.shell, mode, (setting, works))
         ops, _ = make(Mock())
         self.assertIn("disabled", ops.use_tool({"tool": "run_command", "command": "echo hi"}))
-        ops, _ = make(Mock(), shell=True)
+        ops, _ = make(Mock(), shell="host")
         self.assertEqual(ops.use_tool({"tool": "run_command", "command": "echo hi"}), "exit 0\nhi\n")
 
     def test_shell_commands_do_not_receive_credentials(self):
-        ops, _ = make(Mock(), shell=True)
+        ops, _ = make(Mock(), shell="host")
         with patch.dict(os.environ, {"SMART_ROUTER_API_KEY": "sentinel"}):
             result = ops.use_tool({"tool": "run_command", "command": "echo [$SMART_ROUTER_API_KEY]"})
         self.assertEqual(result, "exit 0\n[]\n")

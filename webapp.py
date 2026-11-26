@@ -9,6 +9,8 @@ import os
 import re
 import socket
 import sys
+import shutil
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -22,6 +24,7 @@ from team_agents.agent_retry import AgentRetry
 from team_agents.implementer_agent import is_safe_relative_path
 from team_agents.markdown import render_document, to_html
 from team_agents.operations import Operations, list_routes
+from team_agents.profiles import load_profiles
 from team_agents.workbench import CONTEXT_LIMIT, Team, clip
 from team_agents.role_agents import run as native_artifacts
 from team_agents.reviewer_agent import ask_agent_reviewer
@@ -149,14 +152,14 @@ def make_retry_prompt(io, autonomous, ops):
     return prompt
 
 
-def build_runtime(io, autonomous, *, ask, routes=(), sleep=time.sleep):
+def build_runtime(io, autonomous, *, ask, routes=(), sleep=time.sleep, shared=None):
     """Compose the retry layers for one run. Interactive: the PR #4 behavior
     (one scoped timeout retry, then the human decides), with no silent
     per-call retries. Autonomous: the operations agent is the only retry
     decider, at both the call and the stage level, so budgets don't stack."""
     ops = Operations(ask, emit=io.emit, routes=routes, sleep=sleep, autonomous=autonomous,
                      advisor=lambda role, task, **kw: ask(role, task, timeout=30, **kw))
-    team = Team(ops, emit=io.emit)
+    team = Team(ops, emit=io.emit, shared=shared)
     retry = AgentRetry(prompt=make_retry_prompt(io, autonomous, ops), emit=io.emit,
                        auto_retries=0 if autonomous else 1, ask_again=autonomous)
     return ops, team, retry
@@ -165,6 +168,10 @@ def build_runtime(io, autonomous, *, ask, routes=(), sleep=time.sleep):
 def operations_preflight():
     """The operations agent's environment check: catch misconfiguration
     before a run burns time on it, instead of a mid-run crash or timeout."""
+    try:
+        load_profiles()
+    except (OSError, ValueError) as exc:
+        return f"[operations] Agent profiles: {exc}"
     missing = [v for v in ("SMART_ROUTER_URL", "SMART_ROUTER_API_KEY") if not os.environ.get(v)]
     if missing:
         return f"[operations] Missing environment: {', '.join(missing)}. Set them and restart the server."
@@ -204,6 +211,9 @@ def write_implementation_files(run_dir, result, emit, folder="implementation"):
     here too, so a write can never land outside the run's own directory."""
     run_dir = run_dir.resolve()
     base = (run_dir / folder).resolve()
+    if run_dir not in base.parents:  # a link planted where the folder should be
+        emit(f"[operations] Skipped writing {folder}/: it leads outside the run directory.")
+        return
     base.mkdir(parents=True, exist_ok=True)
     for file in result.get("files", []):
         if not is_safe_relative_path(file["path"]):
@@ -248,6 +258,9 @@ def make_output_writer(run_dir, io):
                 io.emit(f"[operations] Could not write output for {name}: {exc}")
             if name == "Implementer":
                 write_implementation_files(run_dir, result, io.emit, folder="draft")
+                # A copy the rest of the team can read and run. Never published from.
+                write_implementation_files(run_dir / "workspace", result, lambda text: None,
+                                           folder="proposal")
             with io.lock:
                 security = any(stage["name"] == SECURITY_REVIEW for stage in io.stages)
             # A blocked security review arrives with ok=False, so never gets here.
@@ -295,9 +308,15 @@ def start_run(goal, *, autonomous=False, output_dir=None):
         _thread_io[threading.get_ident()] = io
         if run_dir:
             io.emit(f"[operations] Writing this run's output to {run_dir}")
-        team = None
+        team = scratch = None
         try:
-            ops, team, retry = build_runtime(io, autonomous, ask=ask_role, routes=list_routes())
+            if run_dir:
+                shared = run_dir / "workspace"
+            else:  # nothing is kept, but the team still needs somewhere to work
+                shared = scratch = Path(tempfile.mkdtemp(prefix="lab-run-"))
+            shared.mkdir(parents=True, exist_ok=True)
+            ops, team, retry = build_runtime(io, autonomous, ask=ask_role, routes=list_routes(),
+                                             shared=shared)
             workflow = release_workflow(
                 decide=team,
                 review=lambda *a: ask_agent_reviewer(*a, decide=team),
@@ -313,6 +332,8 @@ def start_run(goal, *, autonomous=False, output_dir=None):
             run_workflow(nodes, state, **controls)
         except SystemExit as exc:
             io.emit(str(exc))
+        except OSError as exc:
+            io.emit(f"[operations] Run stopped: {exc}")
         finally:
             try:
                 if team and team.notes and not team.memory_down:
@@ -321,6 +342,8 @@ def start_run(goal, *, autonomous=False, output_dir=None):
             except Exception as exc:
                 io.emit(f"[team] Couldn't record lessons ({exc}).")
             finally:
+                if scratch:
+                    shutil.rmtree(scratch, ignore_errors=True)
                 del _thread_io[threading.get_ident()]
                 io.done = True
 
