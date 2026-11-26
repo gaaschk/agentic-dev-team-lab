@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from uuid import uuid4
 from urllib.parse import urlparse
 
 from flask import Flask, jsonify, render_template_string, request
@@ -200,7 +201,10 @@ def start_run(goal, *, autonomous=False, output_dir=None):
         io = WebIO()
         run_state["io"] = io
 
-    run_dir = Path(output_dir) / time.strftime("%Y%m%d-%H%M%S") if output_dir else None
+    # A short random suffix, not just the second-resolution timestamp, keeps two
+    # runs started in the same second from colliding into one output directory.
+    run_dir = Path(output_dir) / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}" \
+        if output_dir else None
 
     def on_output(name, result, rendered, ok):
         io.finish_stage(name, rendered, ok)
