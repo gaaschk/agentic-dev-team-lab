@@ -9,6 +9,8 @@ import os
 import re
 import socket
 import sys
+import shutil
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -20,11 +22,13 @@ from flask import Flask, jsonify, render_template_string, request
 from plan_release import ask_role
 from team_agents.agent_retry import AgentRetry
 from team_agents.implementer_agent import is_safe_relative_path
-from team_agents.markdown import render_document
+from team_agents.markdown import render_document, to_html
 from team_agents.operations import Operations, list_routes
+from team_agents.profiles import load_profiles
 from team_agents.workbench import CONTEXT_LIMIT, Team, clip
 from team_agents.role_agents import run as native_artifacts
 from team_agents.reviewer_agent import ask_agent_reviewer
+from workflows.managed import SECURITY_REVIEW, assemble, planning_workflow
 from workflows.release import release_workflow
 from workflows.runner import Step, run as run_workflow
 
@@ -76,6 +80,10 @@ class WebIO:
         with self.lock:
             self.stages = [{"name": name, "status": "pending", "output": None} for name in names]
 
+    def add_stages(self, names):
+        with self.lock:
+            self.stages += [{"name": name, "status": "pending", "output": None} for name in names]
+
     def start_stage(self, name):
         with self.lock:
             for stage in self.stages:
@@ -84,12 +92,14 @@ class WebIO:
                     return
             self.stages.append({"name": name, "status": "running", "output": None})
 
-    def finish_stage(self, name, output, ok=True):
+    def finish_stage(self, name, output, ok=True, result=None):
         with self.lock:
             for stage in reversed(self.stages):
                 if stage["name"] == name and stage["status"] == "running":
                     stage["status"] = "done" if ok else "failed"
                     stage["output"] = output
+                    # What the page shows; a failed stage has only its message.
+                    stage["html"] = to_html(result if ok and result is not None else output)
                     return
 
     def prompt(self, text):
@@ -142,14 +152,14 @@ def make_retry_prompt(io, autonomous, ops):
     return prompt
 
 
-def build_runtime(io, autonomous, *, ask, routes=(), sleep=time.sleep):
+def build_runtime(io, autonomous, *, ask, routes=(), sleep=time.sleep, shared=None):
     """Compose the retry layers for one run. Interactive: the PR #4 behavior
     (one scoped timeout retry, then the human decides), with no silent
     per-call retries. Autonomous: the operations agent is the only retry
     decider, at both the call and the stage level, so budgets don't stack."""
     ops = Operations(ask, emit=io.emit, routes=routes, sleep=sleep, autonomous=autonomous,
                      advisor=lambda role, task, **kw: ask(role, task, timeout=30, **kw))
-    team = Team(ops, emit=io.emit)
+    team = Team(ops, emit=io.emit, shared=shared)
     retry = AgentRetry(prompt=make_retry_prompt(io, autonomous, ops), emit=io.emit,
                        auto_retries=0 if autonomous else 1, ask_again=autonomous)
     return ops, team, retry
@@ -158,6 +168,10 @@ def build_runtime(io, autonomous, *, ask, routes=(), sleep=time.sleep):
 def operations_preflight():
     """The operations agent's environment check: catch misconfiguration
     before a run burns time on it, instead of a mid-run crash or timeout."""
+    try:
+        load_profiles()
+    except (OSError, ValueError) as exc:
+        return f"[operations] Agent profiles: {exc}"
     missing = [v for v in ("SMART_ROUTER_URL", "SMART_ROUTER_API_KEY") if not os.environ.get(v)]
     if missing:
         return f"[operations] Missing environment: {', '.join(missing)}. Set them and restart the server."
@@ -191,12 +205,15 @@ def write_stage_document(run_dir, name, result):
         (run_dir / f"{slug}.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
 
 
-def write_implementation_files(run_dir, result, emit):
-    """Materialize the Implementer's proposed files under run_dir/implementation/.
+def write_implementation_files(run_dir, result, emit, folder="implementation"):
+    """Materialize the Implementer's proposed files under run_dir/<folder>/.
     Every path was already validated by parse_files(); re-check and resolve
     here too, so a write can never land outside the run's own directory."""
     run_dir = run_dir.resolve()
-    base = (run_dir / "implementation").resolve()
+    base = (run_dir / folder).resolve()
+    if run_dir not in base.parents:  # a link planted where the folder should be
+        emit(f"[operations] Skipped writing {folder}/: it leads outside the run directory.")
+        return
     base.mkdir(parents=True, exist_ok=True)
     for file in result.get("files", []):
         if not is_safe_relative_path(file["path"]):
@@ -213,6 +230,50 @@ def write_implementation_files(run_dir, result, emit):
             emit(f"[operations] Could not write {file['path']!r}: {exc}")
             continue
         emit(f"[operations] Wrote {target.relative_to(run_dir)}")
+
+
+def make_output_writer(run_dir, io, shared=None):
+    """The runner's on_output. Proposed code goes to draft/, and reaches
+    implementation/ only after every blocking review in the run passes."""
+    seen = {"proposal": None, "reviewed": False}
+
+    def on_output(name, result, rendered, ok):
+        io.finish_stage(name, rendered, ok, result)
+        if shared and ok and result is not None and name == "Implementer":
+            # A copy the rest of the team can read and run, whether or not
+            # outputs are kept. Never published from.
+            try:
+                write_implementation_files(shared, result, lambda text: None, folder="proposal")
+            except OSError as exc:
+                io.emit(f"[operations] Could not share the proposal with the team: {exc}")
+        if not run_dir:
+            return
+        try:
+            if not ok or result is None:
+                write_stage_document(run_dir, name, rendered)
+                return
+            # Remember results first: a failed document write must not lose them.
+            if name == "Implementer":
+                seen["proposal"] = result
+            elif name == "Reviewer":
+                seen["reviewed"] = result["verdict"] == "PASS"
+                if not seen["reviewed"]:
+                    io.emit("[operations] Review requires changes: the code stays in draft/.")
+            try:
+                write_stage_document(run_dir, name, result)
+            except OSError as exc:
+                io.emit(f"[operations] Could not write output for {name}: {exc}")
+            if name == "Implementer":
+                write_implementation_files(run_dir, result, io.emit, folder="draft")
+            with io.lock:
+                security = any(stage["name"] == SECURITY_REVIEW for stage in io.stages)
+            # A blocked security review arrives with ok=False, so never gets here.
+            if name == (SECURITY_REVIEW if security else "Reviewer") and seen["reviewed"]:
+                write_implementation_files(run_dir, seen["proposal"], io.emit)
+        except OSError as exc:
+            io.emit(f"[operations] Could not write output for {name}: {exc}")
+
+    return on_output
 
 
 def run_record(io):
@@ -245,38 +306,37 @@ def start_run(goal, *, autonomous=False, output_dir=None):
     run_dir = Path(output_dir) / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}" \
         if output_dir else None
 
-    def on_output(name, result, rendered, ok):
-        io.finish_stage(name, rendered, ok)
-        if not run_dir:
-            return
-        try:
-            if ok and result is not None:
-                write_stage_document(run_dir, name, result)
-                if name == "Implementer":
-                    write_implementation_files(run_dir, result, io.emit)
-            else:
-                write_stage_document(run_dir, name, rendered)
-        except OSError as exc:
-            io.emit(f"[operations] Could not write output for {name}: {exc}")
-
     def worker():
         _thread_io[threading.get_ident()] = io
         if run_dir:
             io.emit(f"[operations] Writing this run's output to {run_dir}")
-        team = None
+        team = scratch = None
         try:
-            ops, team, retry = build_runtime(io, autonomous, ask=ask_role, routes=list_routes())
+            if run_dir:
+                shared = run_dir / "workspace"
+            else:  # nothing is kept, but the team still needs somewhere to work
+                shared = scratch = Path(tempfile.mkdtemp(prefix="lab-run-"))
+            shared.mkdir(parents=True, exist_ok=True)
+            on_output = make_output_writer(run_dir, io, shared)
+            ops, team, retry = build_runtime(io, autonomous, ask=ask_role, routes=list_routes(),
+                                             shared=shared)
             workflow = release_workflow(
                 decide=team,
                 review=lambda *a: ask_agent_reviewer(*a, decide=team),
                 artifact_runner=native_artifacts,
             )
-            io.seed_stages([node.name for node in workflow if isinstance(node, Step)])
-            approve = make_approval_prompt(io, autonomous)
-            run_workflow(workflow, {"goal": goal}, retry=retry, prompt=approve, emit=io.emit,
-                         on_start=io.start_stage, on_output=on_output)
+            controls = dict(retry=retry, prompt=make_approval_prompt(io, autonomous), emit=io.emit,
+                            on_start=io.start_stage, on_output=on_output)
+            io.seed_stages(["Project Manager"])
+            state = run_workflow(planning_workflow(decide=team), {"goal": goal}, **controls)
+            nodes = assemble(state["approved_team"], workflow, decide=team,
+                             artifact_runner=native_artifacts)
+            io.add_stages([node.name for node in nodes if isinstance(node, Step)])
+            run_workflow(nodes, state, **controls)
         except SystemExit as exc:
             io.emit(str(exc))
+        except OSError as exc:
+            io.emit(f"[operations] Run stopped: {exc}")
         finally:
             try:
                 if team and team.notes and not team.memory_down:
@@ -285,6 +345,8 @@ def start_run(goal, *, autonomous=False, output_dir=None):
             except Exception as exc:
                 io.emit(f"[team] Couldn't record lessons ({exc}).")
             finally:
+                if scratch:
+                    shutil.rmtree(scratch, ignore_errors=True)
                 del _thread_io[threading.get_ident()]
                 io.done = True
 
@@ -333,8 +395,15 @@ PAGE = """
   }
   .detail-header label { display: inline-flex; align-items: center; gap: 0.3em; margin: 0; }
   #detail-output {
-    margin: 0; padding: 1rem; white-space: pre-wrap; max-height: 70vh;
-    overflow-y: auto; background: #f8f8f8;
+    padding: 0 1.25rem 1rem; max-height: 70vh; overflow-y: auto;
+    font-family: system-ui, sans-serif; line-height: 1.5; overflow-wrap: anywhere;
+  }
+  #detail-output h2 { font-size: 1.15rem; margin: 1.2rem 0 0.4rem; }
+  #detail-output h3 { font-size: 1rem; margin: 0.9rem 0 0.3rem; }
+  #detail-output li { margin-bottom: 0.5rem; }
+  #detail-output .text { white-space: pre-wrap; }
+  #detail-output pre {
+    background: #f4f4f4; padding: 0.75rem; overflow-x: auto; overflow-wrap: normal;
   }
 
   details#log-details { margin-top: 1rem; }
@@ -367,7 +436,7 @@ PAGE = """
         <label><input type="checkbox" id="follow-checkbox" checked> follow run</label>
       </span>
     </div>
-    <pre id="detail-output" tabindex="0"></pre>
+    <div id="detail-output" tabindex="0"></div>
   </div>
 </div>
 
@@ -467,15 +536,17 @@ function ensureRows(names) {
     li.appendChild(btn);
     list.appendChild(li);
   }
-  list.addEventListener('keydown', (e) => {
-    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-    e.preventDefault();
-    const rows = Array.from(document.querySelectorAll('.agent-row'));
-    const idx = rows.indexOf(document.activeElement);
-    const next = e.key === 'ArrowDown' ? Math.min(idx + 1, rows.length - 1) : Math.max(idx - 1, 0);
-    rows[next].focus();
-  });
 }
+
+// Attached once: the rows are rebuilt when the team grows, the list isn't.
+document.getElementById('agent-list').addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault();
+  const rows = Array.from(document.querySelectorAll('.agent-row'));
+  const idx = rows.indexOf(document.activeElement);
+  const next = e.key === 'ArrowDown' ? Math.min(idx + 1, rows.length - 1) : Math.max(idx - 1, 0);
+  rows[next].focus();
+});
 
 function renderList() {
   for (const stage of stages) {
@@ -488,11 +559,6 @@ function renderList() {
     row.disabled = stage.status === 'pending';
     row.setAttribute('aria-current', stage.name === selected ? 'true' : 'false');
   }
-}
-
-function prettyOutput(text) {
-  if (text == null) return '';
-  try { return JSON.stringify(JSON.parse(text), null, 2); } catch (e) { return text; }
 }
 
 function selectStage(name, manual) {
@@ -515,7 +581,9 @@ function renderDetail() {
   if (lastRenderedKey === selected && lastRenderedOutput === raw) return;
   lastRenderedKey = selected;
   lastRenderedOutput = raw;
-  document.getElementById('detail-output').textContent = hasOutput ? prettyOutput(raw) : raw;
+  const panel = document.getElementById('detail-output');
+  // stage.html is built and escaped by the server (team_agents/markdown.py).
+  if (hasOutput) panel.innerHTML = stage.html; else panel.textContent = raw;
 }
 
 function autoFollow() {
@@ -541,7 +609,7 @@ function appendLog(newLines) {
 }
 
 document.getElementById('copy-btn').onclick = () => {
-  navigator.clipboard.writeText(document.getElementById('detail-output').textContent);
+  navigator.clipboard.writeText(document.getElementById('detail-output').innerText);
 };
 document.getElementById('follow-checkbox').onchange = (e) => {
   following = e.target.checked;

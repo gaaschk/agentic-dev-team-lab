@@ -1,6 +1,6 @@
 from unittest import TestCase
 
-from team_agents.markdown import render_document, to_markdown
+from team_agents.markdown import render_document, to_html, to_markdown
 
 
 class MarkdownTests(TestCase):
@@ -35,3 +35,18 @@ class MarkdownTests(TestCase):
     def test_render_document_passes_through_plain_text(self):
         doc = render_document("Stopped", "Stopped. Architect not called.")
         self.assertEqual(doc, "# Stopped\n\nStopped. Architect not called.\n")
+
+    def test_proposed_files_stay_as_code(self):
+        files = {"files": [{"path": "a.md", "content": "```\nx = 1\n```\n"}]}
+        self.assertIn("**a.md**\n\n````\n```\nx = 1\n```\n````", to_markdown(files))
+        self.assertIn("<h4>a.md</h4><pre><code>```\nx = 1", to_html(files))
+
+    def test_html_is_readable_and_escapes_model_text(self):
+        page = to_html({"release_goal": "<script>alert(1)</script>",
+                        "checks": [{"name": "Restart", "<b>": "x"}], "open_questions": []})
+        self.assertIn("<h2>Release Goal</h2>", page)
+        self.assertNotIn("<script>", page)
+        self.assertNotIn("<b>", page)
+        self.assertIn("<strong>Name:</strong>", page)
+        self.assertIn("(none)", page)
+        self.assertNotIn("{", page)

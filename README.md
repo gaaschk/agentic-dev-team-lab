@@ -71,14 +71,20 @@ after the fact or from a session that isn't attached to that terminal —
 
 ### Writing outputs to disk
 
+The page shows each stage as a readable document (headings and lists), with
+proposed files as code blocks.
+
 The start form has an optional "Write outputs to" field. Leave it blank and
 nothing is written — the run stays purely in-memory, same as the CLI. Set it
 (e.g. `./runs`) and each run gets its own timestamped subdirectory containing,
 for every stage that finishes: a `.md` file (a generic, readable rendering of
-that stage's JSON output — headings per field, bullet lists for arrays) and,
+that stage's JSON output — headings per field, bullet lists for arrays, code
+blocks for proposed files) and,
 for structured stages, the raw `.json` alongside it. **This is the one place
-in the lab that writes the Implementer's proposal to disk as real files**,
-under `<run>/implementation/`: every proposed path is validated twice (once
+in the lab that writes the Implementer's proposal to disk as real files**:
+first under `<run>/draft/`, and again under `<run>/implementation/` only after
+the Reviewer returns `PASS` (and the Security Review too, when the run has
+one). Anything only in `draft/` is not approved. Every proposed path is validated twice (once
 when the Implementer's response is parsed, once again right before the write)
 to be relative and unable to escape that directory, and a path that fails
 either check is skipped with a logged reason instead of written anywhere.
@@ -136,22 +142,59 @@ Hard limits that stay in code:
 
 Every decision and its reason is logged with an `[operations]` prefix.
 
+### The Project Manager builds the team
+
+In the web UI, each run starts with the Project Manager. It sees every
+specialist profile and proposes the ones the goal needs, each with a task. You
+approve that team (autonomous runs approve it automatically).
+
+- **Discovery** specialists run first; their reports reach the Product Lead
+  and the Architect.
+- **Assurance** specialists run after QA; their reports reach the Implementer.
+- **Readiness** specialists run after the Reviewer.
+
+The core release (Product Lead, Architect, QA, Implementer, Reviewer) and its
+approvals are the same in every run. Specialists advise: their reports don't
+change approved scope. The one exception that can block is the Chief Security
+Officer (`cso`): choosing it also adds a **Security Review** of the proposed
+code after the Reviewer, and `CHANGES_REQUIRED` there ends the run as failed. The command-line release
+(`plan_release.py`) runs the core team only.
+
+To add an agent, create a snake_case Markdown file in `team_agents/roles/`
+with a heading and instructions; nothing needs registering. `## Goal` is what
+the Project Manager reads, and `## Crew Phase` (`discovery`, `assurance`, or
+`readiness`) limits where it can be placed. To run one on its own:
+
+```bash
+.venv/bin/python -m team_agents --list
+```
+
+```bash
+.venv/bin/python -m team_agents --artifact README.md devex_lead "Find onboarding friction."
+```
+
 ### Every agent's workspace and memory
 
-In the web UI, every agent (Product Lead, Architect, QA, Implementer,
-Reviewer, and Operations) has its own persistent workspace under `.agents/`
+In the web UI, every agent (the core team, the Project Manager, each chosen
+specialist, and Operations) has its own persistent workspace under `.agents/`
 (git-ignored; `LAB_AGENTS_HOME` to move it), for example
 `.agents/architect/`. Inside it, the agent can list, read, and write files,
 and it keeps its own memory of what it tried and what worked. It decides the
-format and structure itself. The shared code is `team_agents/workbench.py`.
+format and structure itself. The shared code is `team_agents/workbench.py` and
+`team_agents/sandbox.py`.
 
 - **Before answering**, each agent checks its memory and can use its tools,
   up to 8 steps. Its notes are added to its task. This happens once per stage
-  per run, not again on a retry. With the shell off, an agent with an empty
-  workspace skips this step.
+  per run, not again on a retry. With the shell off, an agent with nothing in
+  either workspace skips this step.
+- **Once proposed code exists**, each agent that answers after it (Reviewer,
+  security review, readiness specialists) must run at least one command on a
+  copy of it before answering, when the shell is on. The real output goes into
+  its task. An agent that advised earlier prepares again.
 - **When the run ends** (finished or stopped), each agent that ran is shown
   how the run went: each stage's status and output, approvals, the Reviewer's
-  verdict, and recent log. It's asked to record lessons in its memory.
+  verdict, and recent log. It must save lessons to its memory before it can
+  finish this step (still within the 8 steps).
 - Memory steps go through the operations agent like any other call, marked
   as optional steps (90s timeout, which a retry can shorten but not extend),
   so a hung route gets rerouted rather than losing memory. All memory steps in
@@ -160,17 +203,32 @@ format and structure itself. The shared code is `team_agents/workbench.py`.
   up on one, the agent answers without it and memory is off for the rest of
   that run.
 
-**Every agent can run shell commands** (60s limit each, every command and its
-output logged). Set `LAB_AGENT_SHELL=0` to turn this off. Commands **are not
-sandboxed**: they start in the agent's workspace folder, but run as your user
-with full access to your files and network, the same as anything you type in a
-terminal. Agents read text that partly comes from other models (plans,
-designs, error messages), so a crafted or mistaken message could lead one to
-run a harmful command on your machine. Their prompts tell them to treat that
-text as data, but a prompt is not a sandbox. Environment variables ending in
-`_KEY`, `_TOKEN`, `_SECRET`, or `_PASSWORD` are not passed to commands, which
-doesn't protect secrets stored in files. File tools are always limited to
-each agent's own workspace.
+**A shared workspace per run.** Paths starting with `run/` are in a folder the
+whole team can list, search, read, and write: `<run>/workspace/` when you set an
+output folder, otherwise a temporary folder removed after the run. The
+Implementer's proposed files are copied to `run/proposal/` so others can read
+and run them. Publishing never reads from this folder.
+
+**Shell commands run in the macOS sandbox** (60s limit each, every command and
+its output logged). A command can:
+
+- read and write only the agent's own workspace and the run's shared one, plus
+  read the system and developer tools it needs to run;
+- use the internet, but not services listening on this machine (so it can't
+  reach the web UI);
+- see none of your environment variables, keychain, or home folder.
+
+It can still reach other machines on your network, and anything an agent can
+read, it can also send over the internet. Agents are told not to, and a prompt
+is not a boundary. `sandbox-exec` is deprecated by Apple, though it still ships.
+
+`LAB_AGENT_SHELL=0` turns the shell off. Where the sandbox isn't available
+(for example off macOS), the shell is off. `LAB_AGENT_SHELL=host` explicitly
+opts in to an **unsandboxed** shell with your full access to files and network;
+only variables ending in `_KEY`, `_TOKEN`, `_SECRET`, or `_PASSWORD` are held
+back from it.
+
+Each agent's title must be unique, since it names the agent's stage and memory.
 
 Before starting any web UI run, the operations agent also checks the
 environment: `SMART_ROUTER_URL`/`SMART_ROUTER_API_KEY` are set and the router

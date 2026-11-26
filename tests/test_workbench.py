@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from team_agents.workbench import Team
+from team_agents.workbench import FRESH_COPY, Team, Workbench
 
 
 def step(tool, path="", content="", notes=""):
@@ -97,8 +97,7 @@ class TeamTests(TestCase):
         self.assertEqual(memory_calls, [("Product Lead memory", 90)])
 
     def test_reflection_that_writes_nothing_is_reported(self):
-        decide = FakeDecide([step("decide"), json.dumps({"tool": "decide", "path": "",
-                                                          "content": "", "command": ""})])
+        decide = FakeDecide([step("decide")] * 9)  # never writes, until the step cap
         log = []
         team = Team(decide, emit=log.append, shell=False)
         team("role", "t", stage="QA", model="m")
@@ -109,8 +108,8 @@ class TeamTests(TestCase):
 
     def test_a_failed_write_does_not_count_as_recorded_memory(self):
         decide = FakeDecide([step("decide"),
-                             step("write_file", path="../escape.md", content="lost"),
-                             step("decide")])
+                             step("write_file", path="../escape.md", content="lost")]
+                            + [step("decide")] * 7)
         log = []
         team = Team(decide, emit=log.append, shell=False)
         team("role", "t", stage="QA", model="m")
@@ -131,3 +130,59 @@ class TeamTests(TestCase):
             Team(decide, emit=lambda t: None, shell=shell)("role", "t", stage="QA", model="m")
             schema = decide.calls[0][2]["response_format"]["json_schema"]["schema"]
             self.assertEqual("run_command" in schema["properties"]["tool"]["enum"], shell)
+
+    def test_an_agent_cannot_finish_reflecting_before_it_has_saved_something(self):
+        """Regression: in a live run four of five agents decided at once."""
+        decide = FakeDecide([step("decide"), step("decide"),
+                             step("write_file", path="memory.md", content="lesson"),
+                             step("decide")])
+        log = []
+        team = Team(decide, emit=log.append, shell=False)
+        team("role", "t", stage="QA", model="m")
+        team.reflect({})
+        self.assertEqual((Path(self.home) / "qa" / "memory.md").read_text(), "lesson")
+        self.assertNotIn("[QA] Recorded nothing to memory this run.", log)
+        offered = ["decide" in c[2]["response_format"]["json_schema"]["schema"]["properties"]
+                   ["tool"]["enum"] for c in decide.calls if c[0] == "QA memory"]
+        self.assertEqual(offered, [True, False, False, True])  # preparation may decide at once
+
+    def test_an_agent_must_run_the_proposed_code_before_answering(self):
+        shared = Path(self.home) / "run"
+        shared.mkdir()
+        command = json.dumps({"tool": "run_command", "path": "", "content": "",
+                              "command": "exit 3", "notes": ""})
+        decide = FakeDecide([step("decide", notes="advice"),            # before any code
+                             step("decide"), command,                    # once code exists
+                             step("decide", notes="tests fail")])
+        team = Team(decide, emit=lambda t: None, shell="host", shared=shared)
+        team("role", "t", stage="QA Lead", model="m")
+        (shared / "proposal").mkdir()
+        team("role", "t", stage="QA Lead", model="m")
+        team("role", "t", stage="QA Lead", model="m")  # a retry reuses the check
+        offered = ["decide" in c[2]["response_format"]["json_schema"]["schema"]["properties"]
+                   ["tool"]["enum"] for c in decide.calls if c[0] == "QA Lead memory"]
+        self.assertEqual(offered, [True, False, False, True])
+        final = decide.calls[-1][1]
+        self.assertIn("tests fail", final)
+        self.assertIn("$ exit 3\nexit 3", final)
+
+    def test_nothing_has_to_be_run_with_the_shell_off(self):
+        shared = Path(self.home) / "run"
+        (shared / "proposal").mkdir(parents=True)
+        decide = FakeDecide([step("decide")])
+        Team(decide, emit=lambda t: None, shell=False, shared=shared)(
+            "role", "t", stage="Reviewer", model="m")
+        self.assertEqual([c[0] for c in decide.calls], ["Reviewer memory", "Reviewer"])
+
+    def test_the_copy_under_test_is_fresh_even_in_a_used_workspace(self):
+        """Regression: copying over an earlier run's copy tested stale files."""
+        shared = Path(self.home) / "run"
+        (shared / "proposal").mkdir(parents=True)
+        (shared / "proposal" / "app.py").write_text("new")
+        stale = Path(self.home) / "qa" / "under-test"
+        stale.mkdir()
+        (stale / "old.py").write_text("old")
+        bench = Workbench(Path(self.home) / "qa", shell="host", shared=shared)
+        ok, result = bench.run_tool({"tool": "run_command", "command": FRESH_COPY})
+        self.assertEqual((ok, result), (True, "exit 0\n"))
+        self.assertEqual([p.name for p in stale.iterdir()], ["app.py"])

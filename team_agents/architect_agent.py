@@ -71,7 +71,7 @@ def parse_design(raw_design):
     return design
 
 
-def technical_design(failure, goal, plan, *, decide, artifact_runner=run_agent):
+def technical_design(failure, goal, plan, *reports, decide, artifact_runner=run_agent):
     architect = (ROLES_DIR / "architect.md").read_text(encoding="utf-8")
     task = (
         "Make concrete design choices for the approved product below. "
@@ -80,14 +80,20 @@ def technical_design(failure, goal, plan, *, decide, artifact_runner=run_agent):
         "specific choices in nonempty strings. Return only the requested JSON design."
     )
 
+    artifacts = {
+        "approved_plan": Artifact("Approved release scope and criteria", plan),
+        "brief": Artifact("Original goal, for context only", goal),
+    }
+    required = {"approved_plan"}
+    if reports:
+        artifacts["specialist_advice"] = Artifact("Specialist advice within the approved scope", reports)
+        required.add("specialist_advice")
+
     def request_design(instructions):
         return artifact_runner(
             role=architect, stage="Architect", task=instructions,
-            artifacts={
-                "approved_plan": Artifact("Approved release scope and criteria", plan),
-                "brief": Artifact("Original goal, for context only", goal),
-            },
-            required={"approved_plan"}, output_format=architect_format(),
+            artifacts=artifacts,
+            required=required, output_format=architect_format(),
             model=resolve_model("LAB_ARCHITECT_MODEL"), decide=decide,
         )
 
