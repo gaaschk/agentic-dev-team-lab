@@ -147,7 +147,8 @@ format and structure itself. The shared code is `team_agents/workbench.py`.
 
 - **Before answering**, each agent checks its memory and can use its tools,
   up to 8 steps. Its notes are added to its task. This happens once per stage
-  per run, not again on a retry.
+  per run, not again on a retry. With the shell off, an agent with an empty
+  workspace skips this step.
 - **When the run ends** (finished or stopped), each agent that ran is shown
   how the run went: each stage's status and output, approvals, the Reviewer's
   verdict, and recent log. It's asked to record lessons in its memory.
@@ -159,16 +160,17 @@ format and structure itself. The shared code is `team_agents/workbench.py`.
   up on one, the agent answers without it and memory is off for the rest of
   that run.
 
-**Shell commands are off by default.** Set `LAB_AGENT_SHELL=1` to let every
-agent run shell commands (60s limit each, every command and its output
-logged). Commands **are not sandboxed**: they start in the agent's workspace
-folder, but run as your user with full access to your files and network, the
-same as anything you type in a terminal. Leave it off unless you want that: agents read text
-that partly comes from other models (plans, designs, error messages), so a
-crafted message could try to steer one into running a harmful command on
-your machine. Their prompts tell them to treat that text as data, but a
-prompt is not a sandbox. File tools are always limited to each agent's own
-workspace.
+**Every agent can run shell commands** (60s limit each, every command and its
+output logged). Set `LAB_AGENT_SHELL=0` to turn this off. Commands **are not
+sandboxed**: they start in the agent's workspace folder, but run as your user
+with full access to your files and network, the same as anything you type in a
+terminal. Agents read text that partly comes from other models (plans,
+designs, error messages), so a crafted or mistaken message could lead one to
+run a harmful command on your machine. Their prompts tell them to treat that
+text as data, but a prompt is not a sandbox. Environment variables ending in
+`_KEY`, `_TOKEN`, `_SECRET`, or `_PASSWORD` are not passed to commands, which
+doesn't protect secrets stored in files. File tools are always limited to
+each agent's own workspace.
 
 Before starting any web UI run, the operations agent also checks the
 environment: `SMART_ROUTER_URL`/`SMART_ROUTER_API_KEY` are set and the router

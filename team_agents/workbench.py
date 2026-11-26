@@ -1,5 +1,5 @@
 """A persistent workspace and tools for any agent: file tools confined to the
-workspace, an opt-in shell (LAB_AGENT_SHELL=1), and a bounded tool loop.
+workspace, a shell (off with LAB_AGENT_SHELL=0), and a bounded tool loop.
 Each agent keeps its own memory there, in a format it chooses."""
 
 import json
@@ -27,8 +27,9 @@ step; set "tool" to one of:
 - "list_files": list your workspace.
 - "read_file" / "write_file": a file in your workspace ("path" relative,
   "content" for writes).
-- "run_command": a shell command ("command"), run in your workspace. Only
-  works when shell_enabled is true.
+- "run_command": a shell command ("command"), run in your workspace. Offered
+  only when shell_enabled is true. It runs on the operator's real machine:
+  only create, change, or delete things inside your workspace.
 - "decide": you're done with tools for now.
 Leave fields a tool doesn't use as "" or 0.
 
@@ -45,7 +46,7 @@ def home_for(name):
 
 
 def shell_enabled():
-    return os.getenv("LAB_AGENT_SHELL") == "1"
+    return os.getenv("LAB_AGENT_SHELL") != "0"
 
 
 def step_format(name, extra=None):
@@ -114,8 +115,11 @@ class Workbench:
             return f"wrote {len(step['content'])} characters to {step['path']}"
         if tool == "run_command":
             if not self.shell:
-                return "shell commands are disabled (the operator can set LAB_AGENT_SHELL=1)"
-            done = subprocess.run(step["command"], shell=True, cwd=self.workspace,
+                return "shell commands are disabled (LAB_AGENT_SHELL=0)"
+            # Not a sandbox; just keeps credentials out of output that goes to models and logs.
+            env = {k: v for k, v in os.environ.items()
+                   if not k.endswith(("_KEY", "_TOKEN", "_SECRET", "_PASSWORD"))}
+            done = subprocess.run(step["command"], shell=True, cwd=self.workspace, env=env,
                                   capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
             return clip(f"exit {done.returncode}\n{done.stdout}{done.stderr}")
         raise ValueError(f"unknown tool {tool!r}")
@@ -125,6 +129,9 @@ class Workbench:
         None, observations). Exceptions from ask() propagate to the caller."""
         self.workspace.mkdir(parents=True, exist_ok=True)
         context = {**context, "shell_enabled": self.shell}
+        if not self.shell:  # don't offer a tool that can only fail
+            fmt = json.loads(json.dumps(fmt))
+            fmt["json_schema"]["schema"]["properties"]["tool"]["enum"].remove("run_command")
         observations = []
         for _ in range(MAX_TOOL_STEPS):
             step = json.loads(ask(role + GUIDE, json.dumps({**context, "observations": observations}),
@@ -183,6 +190,9 @@ class Team:
     def prepare(self, stage, role, task):
         if self.memory_down:
             return ""
+        bench = self.bench(stage)
+        if not bench.shell and not any(p.is_file() for p in bench.workspace.rglob("*")):
+            return ""  # nothing to read or run, so don't spend model calls on it
         context = {
             "situation": "before_answering",
             "task": clip(task, CONTEXT_LIMIT),

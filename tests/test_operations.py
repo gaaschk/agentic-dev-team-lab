@@ -212,11 +212,21 @@ class OperationsToolTests(TestCase):
             self.assertTrue(result.startswith("error"))
         self.assertFalse((Path(ops.workspace).parent / "escape.txt").exists())
 
-    def test_shell_is_off_unless_enabled(self):
+    def test_shell_is_on_by_default_and_can_be_turned_off(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(make(Mock(), shell=None)[0].bench.shell)
+        with patch.dict(os.environ, {"LAB_AGENT_SHELL": "0"}):
+            self.assertFalse(make(Mock(), shell=None)[0].bench.shell)
         ops, _ = make(Mock())
         self.assertIn("disabled", ops.use_tool({"tool": "run_command", "command": "echo hi"}))
         ops, _ = make(Mock(), shell=True)
         self.assertEqual(ops.use_tool({"tool": "run_command", "command": "echo hi"}), "exit 0\nhi\n")
+
+    def test_shell_commands_do_not_receive_credentials(self):
+        ops, _ = make(Mock(), shell=True)
+        with patch.dict(os.environ, {"SMART_ROUTER_API_KEY": "sentinel"}):
+            result = ops.use_tool({"tool": "run_command", "command": "echo [$SMART_ROUTER_API_KEY]"})
+        self.assertEqual(result, "exit 0\n[]\n")
 
     def test_tool_loop_is_capped(self):
         advisor = Mock(return_value=step("list_files"))
