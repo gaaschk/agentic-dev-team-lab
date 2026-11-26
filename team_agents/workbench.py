@@ -74,6 +74,10 @@ def clip(text, limit=OUTPUT_LIMIT):
         text[:limit] + "\n…(truncated here for length; the original continues)")
 
 
+def wrote(observations):
+    return any(o["tool"] == "write_file" and o["ok"] for o in observations)
+
+
 class Workbench:
     def __init__(self, workspace, *, shell=None):
         self.workspace = Path(workspace)
@@ -124,20 +128,31 @@ class Workbench:
             return clip(f"exit {done.returncode}\n{done.stdout}{done.stderr}")
         raise ValueError(f"unknown tool {tool!r}")
 
-    def loop(self, ask, role, context, *, fmt, emit, label):
-        """Run tool steps until the model says "decide". Returns (final step or
-        None, observations). Exceptions from ask() propagate to the caller."""
+    def loop(self, ask, role, context, *, fmt, emit, label, must_write=False):
+        """Run tool steps until the model says "decide" (with must_write, only
+        after a write has succeeded). Returns (final step or None,
+        observations). Exceptions from ask() propagate to the caller."""
         self.workspace.mkdir(parents=True, exist_ok=True)
         context = {**context, "shell_enabled": self.shell}
-        if not self.shell:  # don't offer a tool that can only fail
-            fmt = json.loads(json.dumps(fmt))
-            fmt["json_schema"]["schema"]["properties"]["tool"]["enum"].remove("run_command")
         observations = []
         for _ in range(MAX_TOOL_STEPS):
+            unsaved = must_write and not wrote(observations)
+            # Don't offer a tool that can only fail.
+            hidden = {"run_command"} if not self.shell else set()
+            if unsaved:
+                hidden.add("decide")
+            offered = json.loads(json.dumps(fmt))
+            tool = offered["json_schema"]["schema"]["properties"]["tool"]
+            tool["enum"] = [name for name in tool["enum"] if name not in hidden]
             step = json.loads(ask(role + GUIDE, json.dumps({**context, "observations": observations}),
-                                  response_format=fmt))
+                                  response_format=offered))
             if step["tool"] == "decide":
-                return step, observations
+                if not unsaved:
+                    return step, observations
+                # Not every route enforces the schema.
+                observations.append({"tool": "decide", "input": "", "ok": False,
+                                     "result": "Nothing is saved yet: use write_file first."})
+                continue
             arg = step["command"] if step["tool"] == "run_command" else step["path"]
             ok, result = self.run_tool(step)
             emit(f"[{label}] {step['tool']}({arg}) -> {result.splitlines()[0] if result else ''}")
@@ -230,8 +245,8 @@ class Team:
             try:
                 _, observations = self.bench(stage).loop(
                     self._ask(stage, self.models[stage]), self.roles[stage], context,
-                    fmt=REFLECT_FORMAT, emit=self.emit, label=stage)
-                if not any(o["tool"] == "write_file" and o["ok"] for o in observations):
+                    fmt=REFLECT_FORMAT, emit=self.emit, label=stage, must_write=True)
+                if not wrote(observations):
                     self.emit(f"[{stage}] Recorded nothing to memory this run.")
             except (SystemExit, Exception) as exc:
                 self.memory_down = True

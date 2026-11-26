@@ -97,8 +97,7 @@ class TeamTests(TestCase):
         self.assertEqual(memory_calls, [("Product Lead memory", 90)])
 
     def test_reflection_that_writes_nothing_is_reported(self):
-        decide = FakeDecide([step("decide"), json.dumps({"tool": "decide", "path": "",
-                                                          "content": "", "command": ""})])
+        decide = FakeDecide([step("decide")] * 9)  # never writes, until the step cap
         log = []
         team = Team(decide, emit=log.append, shell=False)
         team("role", "t", stage="QA", model="m")
@@ -109,8 +108,8 @@ class TeamTests(TestCase):
 
     def test_a_failed_write_does_not_count_as_recorded_memory(self):
         decide = FakeDecide([step("decide"),
-                             step("write_file", path="../escape.md", content="lost"),
-                             step("decide")])
+                             step("write_file", path="../escape.md", content="lost")]
+                            + [step("decide")] * 7)
         log = []
         team = Team(decide, emit=log.append, shell=False)
         team("role", "t", stage="QA", model="m")
@@ -131,3 +130,18 @@ class TeamTests(TestCase):
             Team(decide, emit=lambda t: None, shell=shell)("role", "t", stage="QA", model="m")
             schema = decide.calls[0][2]["response_format"]["json_schema"]["schema"]
             self.assertEqual("run_command" in schema["properties"]["tool"]["enum"], shell)
+
+    def test_an_agent_cannot_finish_reflecting_before_it_has_saved_something(self):
+        """Regression: in a live run four of five agents decided at once."""
+        decide = FakeDecide([step("decide"), step("decide"),
+                             step("write_file", path="memory.md", content="lesson"),
+                             step("decide")])
+        log = []
+        team = Team(decide, emit=log.append, shell=False)
+        team("role", "t", stage="QA", model="m")
+        team.reflect({})
+        self.assertEqual((Path(self.home) / "qa" / "memory.md").read_text(), "lesson")
+        self.assertNotIn("[QA] Recorded nothing to memory this run.", log)
+        offered = ["decide" in c[2]["response_format"]["json_schema"]["schema"]["properties"]
+                   ["tool"]["enum"] for c in decide.calls if c[0] == "QA memory"]
+        self.assertEqual(offered, [True, False, False, True])  # preparation may decide at once

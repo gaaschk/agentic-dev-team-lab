@@ -151,7 +151,8 @@ format and structure itself. The shared code is `team_agents/workbench.py`.
   workspace skips this step.
 - **When the run ends** (finished or stopped), each agent that ran is shown
   how the run went: each stage's status and output, approvals, the Reviewer's
-  verdict, and recent log. It's asked to record lessons in its memory.
+  verdict, and recent log. It must save lessons to its memory before it can
+  finish this step (still within the 8 steps).
 - Memory steps go through the operations agent like any other call, marked
   as optional steps (90s timeout, which a retry can shorten but not extend),
   so a hung route gets rerouted rather than losing memory. All memory steps in
