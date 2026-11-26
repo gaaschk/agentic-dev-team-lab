@@ -202,7 +202,7 @@ class Operations:
     def stage_failed(self, recent_log):
         """Decide the stage-level retry gate in an autonomous run: 'r' or 's'.
         The agent decides how many stage retries are worth it; without a usable
-        decision, or at the safety ceiling, the run stops cleanly."""
+        decision, or at the run-wide recovery limit, the run stops cleanly."""
         if self.exhausted():
             self.emit(f"[operations] Stopping the run: run-wide recovery limit reached ({self.limit_text()}).")
             self.think({"situation": "gave_up", "recent_log": recent_log[-8:],
