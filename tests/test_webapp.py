@@ -3,7 +3,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
 from unittest import TestCase, skipUnless
 from unittest.mock import patch
 
@@ -134,7 +134,107 @@ class StartRunOutputErrorTests(TestCase):
             webapp.write_stage_document(run_dir, "Architect", "Stopped. Implementer not called.")
             self.assertIn("Stopped", (run_dir / "architect.md").read_text())
 
+    def test_autonomous_retry_gate_is_decided_by_operations_not_a_human(self):
+        webapp = self.webapp
+        io = webapp.WebIO()
+        io.emit("QA did not return clean JSON.")
+        ops = type("Ops", (), {"stage_failed": lambda self, log: ("s" if log else "r")})()
+        with patch.object(io, "prompt", side_effect=AssertionError("must not block")):
+            self.assertEqual(webapp.make_retry_prompt(io, True, ops)("QA failed."), "s")
+        with patch.object(io, "prompt", return_value="r") as human:
+            self.assertEqual(webapp.make_retry_prompt(io, False, ops)("QA failed."), "r")
+            human.assert_called_once()
+
     def test_output_dir_must_be_a_string(self):
         client = self.webapp.app.test_client()
         res = client.post("/start", json={"goal": "x", "output_dir": 123})
         self.assertEqual(res.status_code, 400)
+
+
+def _ops_decision(action):
+    return json.dumps({"tool": "decide", "path": "", "content": "", "command": "", "action": action,
+                       "route": "", "wait_seconds": 0, "timeout_seconds": 60, "reason": "test"})
+
+
+@skipUnless(importlib.util.find_spec("flask"), "optional Flask web UI dependency not installed")
+class RetryLayeringTests(TestCase):
+    """Count primary model calls through the real runtime composition, since
+    testing each retry layer alone can't catch them multiplying."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.webapp = _import_webapp()
+
+    def setUp(self):
+        patcher = patch.dict(os.environ, {"LAB_AGENTS_HOME": mkdtemp()})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_stage(self, *, autonomous, failure, advisor=(), human=None):
+        from workflows.runner import Step, run
+        webapp = self.webapp
+        counts = {"primary": 0, "primary_before_prompt": None}
+        always = advisor if isinstance(advisor, str) else None
+        advisor = [] if always else list(advisor)
+
+        def ask(role, task, *, stage, **kwargs):
+            if stage == "Operations":
+                return always or advisor.pop(0)
+            if stage.endswith(" memory"):
+                return json.dumps({"tool": "decide", "path": "", "content": "", "command": "",
+                                   "notes": ""})
+            counts["primary"] += 1
+            raise failure
+
+        io = webapp.WebIO()
+        if human:
+            def prompt(text):
+                counts["primary_before_prompt"] = counts["primary"]
+                return human
+            io.prompt = prompt
+        _, team, retry = webapp.build_runtime(io, autonomous, ask=ask, sleep=lambda s: None)
+        step = Step("QA", ("goal",), "out",
+                    lambda _failure, goal: team("role", goal, stage="QA", model="m"),
+                    auto_retryable=True)
+        with self.assertRaises(SystemExit):
+            run((step,), {"goal": "g"}, retry=retry, prompt=lambda t: "y", emit=io.emit)
+        self.assertEqual(advisor, [], "every scripted operations decision should be used")
+        return counts
+
+    def test_interactive_503_reaches_the_human_after_one_call(self):
+        from team_agents.agent_retry import RetryableAgentError
+        counts = self.run_stage(autonomous=False, failure=RetryableAgentError("HTTP 503."), human="s")
+        self.assertEqual(counts["primary_before_prompt"], 1)
+        self.assertEqual(counts["primary"], 1)
+
+    def test_interactive_timeout_keeps_the_single_scoped_retry(self):
+        from team_agents.agent_retry import TransientTimeout
+        counts = self.run_stage(autonomous=False, failure=TransientTimeout("slow."), human="s")
+        self.assertEqual(counts["primary_before_prompt"], 2)
+
+    def test_autonomous_retries_are_exactly_what_operations_decides(self):
+        from team_agents.agent_retry import TransientTimeout
+        counts = self.run_stage(autonomous=True, failure=TransientTimeout("slow."), advisor=[
+            _ops_decision("retry"), _ops_decision("retry"), _ops_decision("give_up"),  # call level
+            _ops_decision("give_up"),                                                  # stage gate
+        ])
+        self.assertEqual(counts["primary"], 3)
+
+    def test_autonomous_stage_retry_does_not_stack_a_second_budget(self):
+        from team_agents.agent_retry import RetryableAgentError
+        counts = self.run_stage(autonomous=True, failure=RetryableAgentError("HTTP 503."), advisor=[
+            _ops_decision("give_up"),   # call level, first stage attempt
+            _ops_decision("retry"),     # stage gate: retry the stage
+            _ops_decision("give_up"),   # call level, second stage attempt
+            _ops_decision("give_up"),   # stage gate: stop
+        ])
+        self.assertEqual(counts["primary"], 2)
+
+    def test_an_advisor_that_always_retries_is_stopped_by_the_run_wide_limit(self):
+        """Regression: per-call and per-stage ceilings used to reset on every
+        stage replay and compound (25 x 26 = 650 calls)."""
+        from team_agents.agent_retry import TransientTimeout
+        from team_agents.operations import MAX_FAILURES
+        counts = self.run_stage(autonomous=True, failure=TransientTimeout("slow."),
+                                advisor=_ops_decision("retry"))
+        self.assertEqual(counts["primary"], MAX_FAILURES)

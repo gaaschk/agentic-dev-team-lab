@@ -22,7 +22,7 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def ask_role(role, goal, *, response_format=None, model=None, stage="Model"):
+def ask_role(role, goal, *, response_format=None, model=None, stage="Model", timeout=120):
     request_id = str(uuid4())
     started = time.monotonic()
 
@@ -54,13 +54,15 @@ def ask_role(role, goal, *, response_format=None, model=None, stage="Model"):
         },
     )
     try:
-        with build_opener(NoRedirect()).open(request, timeout=120) as response:
+        with build_opener(NoRedirect()).open(request, timeout=timeout) as response:
             if response.headers.get("X-Smart-Router-Memory") != "off":
                 raise SystemExit(diagnostic("router did not confirm memory is off"))
             if response.headers.get("X-Request-ID") != request_id:
                 raise SystemExit(diagnostic("router did not echo the request ID"))
             data = json.load(response)
             answer = data["choices"][0]["message"].get("content")
+            if not isinstance(answer, str):
+                raise RetryableAgentError(diagnostic("router returned no text content"))
             print(diagnostic("response received"), file=sys.stderr)
             return answer
     except HTTPError as exc:

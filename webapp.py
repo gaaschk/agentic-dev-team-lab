@@ -21,6 +21,8 @@ from plan_release import ask_role
 from team_agents.agent_retry import AgentRetry
 from team_agents.implementer_agent import is_safe_relative_path
 from team_agents.markdown import render_document
+from team_agents.operations import Operations, list_routes
+from team_agents.workbench import Team
 from team_agents.role_agents import run as native_artifacts
 from team_agents.reviewer_agent import ask_agent_reviewer
 from workflows.release import release_workflow
@@ -126,6 +128,34 @@ def make_approval_prompt(io, autonomous):
     return prompt
 
 
+def make_retry_prompt(io, autonomous, ops):
+    """In an autonomous run the operations agent decides a stage failure
+    (retry, reroute, or stop) instead of blocking on a human click."""
+
+    def prompt(text):
+        if autonomous:
+            with io.lock:
+                recent = io.log[-8:]
+            return ops.stage_failed(recent)
+        return io.prompt(text)
+
+    return prompt
+
+
+def build_runtime(io, autonomous, *, ask, routes=(), sleep=time.sleep):
+    """Compose the retry layers for one run. Interactive: the PR #4 behavior
+    (one scoped timeout retry, then the human decides), with no silent
+    per-call retries. Autonomous: the operations agent is the only retry
+    decider, at both the call and the stage level, so budgets don't stack."""
+    ops = Operations(ask, emit=io.emit, routes=routes, sleep=sleep, autonomous=autonomous,
+                     advisor=lambda role, task, **kw: ask(role, task, timeout=30, **kw))
+    team = Team(ops, emit=io.emit, memory=lambda role, task, *, model=None, **kw: ask(
+        role, task, model=ops.route_for(model), timeout=90, **kw))
+    retry = AgentRetry(prompt=make_retry_prompt(io, autonomous, ops), emit=io.emit,
+                       auto_retries=0 if autonomous else 1, ask_again=autonomous)
+    return ops, team, retry
+
+
 def operations_preflight():
     """The operations agent's environment check: catch misconfiguration
     before a run burns time on it, instead of a mid-run crash or timeout."""
@@ -224,22 +254,36 @@ def start_run(goal, *, autonomous=False, output_dir=None):
         _thread_io[threading.get_ident()] = io
         if run_dir:
             io.emit(f"[operations] Writing this run's output to {run_dir}")
+        team = None
         try:
+            ops, team, retry = build_runtime(io, autonomous, ask=ask_role, routes=list_routes())
             workflow = release_workflow(
-                decide=ask_role,
-                review=lambda *a: ask_agent_reviewer(*a, decide=ask_role),
+                decide=team,
+                review=lambda *a: ask_agent_reviewer(*a, decide=team),
                 artifact_runner=native_artifacts,
             )
             io.seed_stages([node.name for node in workflow if isinstance(node, Step)])
-            retry = AgentRetry(prompt=io.prompt, emit=io.emit, auto_retries=1)
             approve = make_approval_prompt(io, autonomous)
             run_workflow(workflow, {"goal": goal}, retry=retry, prompt=approve, emit=io.emit,
                          on_start=io.start_stage, on_output=on_output)
         except SystemExit as exc:
             io.emit(str(exc))
         finally:
-            del _thread_io[threading.get_ident()]
-            io.done = True
+            try:
+                if team and team.notes and not team.memory_down:
+                    io.emit("[team] Agents are recording lessons from this run…")
+                    with io.lock:
+                        outcome = {
+                            "stages": [{"name": s["name"], "status": s["status"],
+                                        "output": (s["output"] or "")[:1500]} for s in io.stages],
+                            "recent_log": io.log[-15:],
+                        }
+                    team.reflect(outcome)
+            except Exception as exc:
+                io.emit(f"[team] Couldn't record lessons ({exc}).")
+            finally:
+                del _thread_io[threading.get_ident()]
+                io.done = True
 
     threading.Thread(target=worker, daemon=True).start()
     return True, None

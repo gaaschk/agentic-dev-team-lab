@@ -200,6 +200,25 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(plan_release.ask_role("Role", "Goal"), "Answer")
             self.assertIn("request ID:", output.getvalue())
 
+    def test_null_content_is_a_retryable_failure(self):
+        """Regression: some routes return content=None; callers that parse
+        JSON crashed on it instead of treating it as a failed call."""
+        from team_agents.agent_retry import RetryableAgentError
+        env = {"SMART_ROUTER_URL": "https://example.invalid", "SMART_ROUTER_API_KEY": "test"}
+        with patch.dict("os.environ", env), patch.object(plan_release, "build_opener") as build:
+            def empty(request, timeout):
+                response = Response("off")
+                response.seek(0)
+                response.truncate()
+                response.write(json.dumps({"choices": [{"message": {"content": None}}]}))
+                response.seek(0)
+                response.headers["X-Request-ID"] = request.get_header("X-request-id")
+                return response
+
+            build.return_value.open.side_effect = empty
+            with self.assertRaisesRegex(RetryableAgentError, "no text content"):
+                plan_release.ask_role("Role", "Goal", stage="Operations")
+
     def test_request_failure_exposes_kind_stage_and_id(self):
         from urllib.error import HTTPError, URLError
         from uuid import UUID

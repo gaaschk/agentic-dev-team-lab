@@ -90,18 +90,86 @@ On a timeout, temporary router failure, or invalid agent response, choose
 this run, or `s` (or Enter) to stop. A failed retry ends the run. This does not
 override a real blocker or substitute for an approval.
 
-`AgentRetry(auto_retries=N)` adds an operations layer in front of that choice:
-it spends a budget of `N` automatic retries for the whole run — not per
-stage — on its own, logging each attempt, before ever asking a human. Only a
-`TransientTimeout` (a genuine model/network timeout) is eligible, and only on
-a workflow `Step` explicitly marked `auto_retryable=True`; a malformed or
-invalid response, or any other `RetryableAgentError`, always goes straight to
-the human choice above, since repeating a stage can repeat earlier model
-calls within it. The web UI runs with `auto_retries=1`; the CLI defaults to
-`0` (asks immediately, as above). Before starting a web UI run, the same
-operations agent checks the environment — `SMART_ROUTER_URL`/
-`SMART_ROUTER_API_KEY` are set and the router is reachable — and refuses to
-start with a clear message instead of crashing mid-run.
+In the web UI, an **Operations agent** (`team_agents/operations.py`, prompt in
+`team_agents/roles/operations.md`, model via `LAB_OPERATIONS_MODEL`) handles runtime
+problems by reasoning about them, not by following a fixed rule.
+
+**Interactive runs (Autonomous unchecked)** keep the behavior above, plus one
+automatic retry per run for a genuine timeout on a stage marked
+`auto_retryable` (`AgentRetry(auto_retries=1)`); anything else goes straight
+to you. The CLI asks immediately (`auto_retries=0`). Operations never retries a failed call behind your back; it only
+moves later calls to another route when a call is slow.
+
+**Autonomous runs:** Operations is the only thing that decides retries, at
+both levels, so there are no stacked retry budgets.
+
+- When a model call fails (timeout, 429/5xx, dropped connection), the agent
+  gets the error, the stage, how long the call ran, the timeout used, how
+  many attempts and seconds this call has taken, totals for the run (model
+  calls, failed calls, stage retries), recent call history (route, latency,
+  outcome), and the router's real routes from `/v1/models`. It picks one
+  action: `retry` (with a wait and timeout it chooses), `switch_route` (used
+  for the rest of the run), or `give_up`. **It decides how many retries a
+  failure is worth.** Each call is read-only, so repeating one never repeats
+  other work.
+- When a stage fails (for example, malformed output), it decides whether to
+  retry the stage, retry it on another route, or stop the run, and it's asked
+  again after each failed stage retry.
+- When a call succeeds but takes 60s or more, it's asked whether to move
+  later calls to another route before a timeout happens.
+
+Before deciding, it can investigate with its workbench tools (see below), and
+after a recovery works or it gives up, it records the outcome in its memory.
+
+Hard limits that stay in code:
+- One run-wide hard stop that no retry path can reset: 30 minutes of
+  recovery time (time spent in failed calls plus retry waits;
+  `LAB_OPERATIONS_RECOVERY_SECONDS` to change it) or 100 failures (failed model calls plus failed stages, such as invalid output),
+  whichever comes first. After that, nothing is retried and the run stops.
+  Healthy work doesn't count toward it, and the agent sees how much it has
+  used. It catches an agent stuck in a loop; it isn't a retry count.
+- Only routes the router lists are accepted; waits and timeouts are clamped.
+- If its own model can't be reached (30s timeout per step), a call gets at
+  most 3 attempts with backoff, and a failed stage stops the run cleanly.
+- Its own calls follow its route switches, so it stops using a route it
+  found hung.
+
+Every decision and its reason is logged with an `[operations]` prefix.
+
+### Every agent's workspace and memory
+
+In the web UI, every agent (Product Lead, Architect, QA, Implementer,
+Reviewer, and Operations) has its own persistent workspace under `.agents/`
+(git-ignored; `LAB_AGENTS_HOME` to move it), for example
+`.agents/architect/`. Inside it, the agent can list, read, and write files,
+and it keeps its own memory of what it tried and what worked. It decides the
+format and structure itself. The shared code is `team_agents/workbench.py`.
+
+- **Before answering**, each agent checks its memory and can use its tools,
+  up to 8 steps. Its notes are added to its task. This happens once per stage
+  per run, not again on a retry.
+- **When the run ends** (finished or stopped), each agent that ran is shown
+  how the run went: each stage's status and output, approvals, the Reviewer's
+  verdict, and recent log. It's asked to record lessons in its memory.
+- Memory steps get one attempt each, with a 90s timeout. If one fails (for
+  example, the router is down), the agent answers without it, and memory is
+  off for the rest of that run, so an outage costs at most one wait.
+
+**Shell commands are off by default.** Set `LAB_AGENT_SHELL=1` to let every
+agent run shell commands (60s limit each, every command and its output
+logged). Commands **are not sandboxed**: they start in the agent's workspace
+folder, but run as your user with full access to your files and network, the
+same as anything you type in a terminal. Leave it off unless you want that: agents read text
+that partly comes from other models (plans, designs, error messages), so a
+crafted message could try to steer one into running a harmful command on
+your machine. Their prompts tell them to treat that text as data, but a
+prompt is not a sandbox. File tools are always limited to each agent's own
+workspace.
+
+Before starting any web UI run, the operations agent also checks the
+environment: `SMART_ROUTER_URL`/`SMART_ROUTER_API_KEY` are set and the router
+is reachable. If not, it refuses to start, with a clear message, instead of
+crashing mid-run.
 
 The lab sends `X-Smart-Router-Memory: off` and requires acknowledgment. This
 disables GBrain retrieval and save-back for these requests, not usage logging.

@@ -13,8 +13,12 @@ class TransientTimeout(RetryableAgentError):
 
 
 class AgentRetry:
-    def __init__(self, *, prompt=None, emit=None, auto_retries=0):
+    def __init__(self, *, prompt=None, emit=None, auto_retries=0, ask_again=False):
         self.retry_all = False
+        # ask_again: after a failed retry, consult the prompt again instead of
+        # ending the run. For an autonomous decider that chooses how many
+        # retries a failure is worth; interactive runs keep one retry.
+        self.ask_again = ask_again
         self.prompt = prompt
         self.emit = emit or (lambda text: print(text, file=sys.stderr))
         self.auto_retries_left = auto_retries
@@ -37,19 +41,26 @@ class AgentRetry:
                 except RetryableAgentError as retry_failure:
                     failure = retry_failure
                     self.emit(str(failure))
-            if not self.retry_all:
-                while True:
-                    try:
-                        choice = (self.prompt or input)(
-                            f"{stage} failed. [r] Retry once, [a] Retry all for this run, "
-                            "[s] Stop (default): "
-                        ).strip().lower()
-                    except EOFError:
-                        choice = ""
-                    if choice in {"r", "y", "a", "s", "n", ""}:
-                        break
-                if choice in {"s", "n", ""}:
-                    raise SystemExit(stopped or f"Stopped. {stage} not retried.") from None
-                self.retry_all = choice == "a"
-            self.emit(f"Retrying {stage} (one retry).")
-            return attempt(failure)
+            while True:
+                if self.ask_again or not self.retry_all:
+                    while True:
+                        try:
+                            choice = (self.prompt or input)(
+                                f"{stage} failed. [r] Retry once, [a] Retry all for this run, "
+                                "[s] Stop (default): "
+                            ).strip().lower()
+                        except EOFError:
+                            choice = ""
+                        if choice in {"r", "y", "a", "s", "n", ""}:
+                            break
+                    if choice in {"s", "n", ""}:
+                        raise SystemExit(stopped or f"Stopped. {stage} not retried.") from None
+                    self.retry_all = choice == "a"
+                self.emit(f"Retrying {stage} (one retry).")
+                try:
+                    return attempt(failure)
+                except RetryableAgentError as retry_failure:
+                    if not self.ask_again:
+                        raise
+                    failure = retry_failure
+                    self.emit(str(failure))
