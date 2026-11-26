@@ -16,6 +16,7 @@ MAX_TOOL_STEPS = 8
 # Workspaces persist across runs, so the old copy goes first.
 FRESH_COPY = 'rm -rf under-test && cp -R "$RUN_WORKSPACE/proposal" under-test'
 COMMAND_TIMEOUT = 60
+TIMED_OUT = "command timed out"
 OUTPUT_LIMIT = 6000
 CONTEXT_LIMIT = 20000  # a stage output or task shown to an agent's memory step
 AGENTS_HOME = Path(__file__).resolve().parents[1] / ".agents"
@@ -92,10 +93,30 @@ def clip(text, limit=OUTPUT_LIMIT):
         text[:limit] + "\n…(truncated here for length; the original continues)")
 
 
+def checked_the_code(observation):
+    """True for a command that exercised the copy under test. A failing or
+    hanging test is a result too; a blank command, a bare copy, or a missing
+    program is not."""
+    command = observation["input"].strip()
+    ran = observation["ok"] or observation["result"].startswith(TIMED_OUT)
+    return (observation["tool"] == "run_command" and ran
+            and "under-test" in command.replace(FRESH_COPY, "")
+            and not observation["result"].startswith(("exit 126\n", "exit 127\n")))
+
+
 def used(observations, tool):
-    """A write counts only if it saved something; a command counts once it was
-    tried, since a failing test is a result too."""
-    return any(o["tool"] == tool and (o["ok"] or tool == "run_command") for o in observations)
+    """Whether a required tool has really been used."""
+    if tool == "run_command":
+        return any(checked_the_code(o) for o in observations)
+    return any(o["tool"] == tool and o["ok"] for o in observations)
+
+
+_NOT_YET = {
+    "write_file": "Not finished yet: save with write_file first.",
+    "run_command": "Not finished yet: run_command must exercise the code in under-test/ (for "
+                   "example: cd under-test && python3 -m unittest discover). Copying it, a blank "
+                   "command, or a program that wasn't found doesn't count.",
+}
 
 
 class Workbench:
@@ -128,7 +149,7 @@ class Workbench:
         try:
             return True, self._tool(step)
         except subprocess.TimeoutExpired:
-            return False, f"command timed out after {COMMAND_TIMEOUT}s"
+            return False, f"{TIMED_OUT} after {COMMAND_TIMEOUT}s"
         except (OSError, ValueError, UnicodeDecodeError) as exc:
             return False, f"error: {exc}"
 
@@ -146,6 +167,8 @@ class Workbench:
             target.write_text(step["content"], encoding="utf-8")
             return f"wrote {len(step['content'])} characters to {step['path']}"
         if tool == "run_command":
+            if not step["command"].strip():
+                raise ValueError("put the command to run in command")
             if not self.shell:
                 return "shell commands are disabled (LAB_AGENT_SHELL=0)"
             # For the host shell: not a sandbox, just keeps credentials out of output
@@ -217,7 +240,7 @@ class Workbench:
                     return step, observations
                 # Not every route enforces the schema.
                 observations.append({"tool": "decide", "input": "", "ok": False,
-                                     "result": f"Not finished yet: use {require} first."})
+                                     "result": _NOT_YET[require]})
                 continue
             arg = step["command"] if step["tool"] == "run_command" else step["path"]
             ok, result = self.run_tool(step)
@@ -304,7 +327,8 @@ class Team:
             context["instructions"] += (
                 " The proposed code is in run/proposal/. Before deciding, you must check it "
                 f"with run_command: make a fresh copy in your own workspace ({FRESH_COPY}), "
-                "then, inside under-test/, run its tests and try the approved behavior. "
+                "then run its tests and try the approved behavior with commands that start "
+                "with `cd under-test &&`. Use python3; there is no `python`. "
                 "Running it here is expected even if your role says not to execute code. "
                 "Report in 'notes' what you ran and what actually happened.")
         try:
@@ -319,8 +343,9 @@ class Team:
         # The real output, so the answer rests on what happened, not on a summary of it.
         ran = [f"$ {o['input']}\n{o['result']}" for o in observations
                if o["tool"] == "run_command"]
-        if verify and not ran:
+        if verify and not used(observations, "run_command"):
             self.emit(f"[{stage}] Didn't run the proposed code.")
+            notes += "\n\nYou did not run the proposed code, so claim no test results."
         if ran:
             notes += "\n\nCommands you ran and their output:\n" + clip("\n".join(ran))
         return notes
