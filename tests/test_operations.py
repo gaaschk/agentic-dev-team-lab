@@ -6,7 +6,7 @@ from unittest import TestCase
 from unittest.mock import Mock, patch
 
 from team_agents.agent_retry import RetryableAgentError, TransientTimeout
-from team_agents.operations import MAX_ATTEMPTS, Operations
+from team_agents.operations import FALLBACK_ATTEMPTS, RUNAWAY_LIMIT, Operations
 
 
 def step(tool, path="", content="", command=""):
@@ -65,12 +65,44 @@ class OperationsTests(TestCase):
         self.assertEqual(ops("r", "t", model="smart-auto"), "ok")
         self.assertTrue(any("default policy" in line for line in log))
 
-    def test_attempts_are_capped_no_matter_what_the_agent_says(self):
-        decide = Mock(side_effect=TransientTimeout("slow."))
+    def test_the_agent_decides_how_many_retries(self):
+        decide = Mock(side_effect=[TransientTimeout("slow.")] * 6 + ["ok"])
         ops, _ = make(decide, Mock(return_value=decision("retry")))
+        self.assertEqual(ops("r", "t", model="m"), "ok")
+        self.assertEqual(decide.call_count, 7)
+
+    def test_agent_sees_run_totals_when_deciding(self):
+        decide = Mock(side_effect=[TransientTimeout("slow."), TransientTimeout("slow."), "ok"])
+        advisor = Mock(return_value=decision("retry"))
+        ops, _ = make(decide, advisor)
+        ops("r", "t", model="m")
+        second = json.loads(advisor.call_args_list[1].args[1])
+        self.assertEqual(second["attempt"], 2)
+        self.assertEqual(second["run_totals"]["failed_calls"], 2)
+
+    def test_safety_ceiling_stops_an_agent_that_never_gives_up(self):
+        decide = Mock(side_effect=TransientTimeout("slow."))
+        ops, log = make(decide, Mock(return_value=decision("retry")))
         with self.assertRaises(TransientTimeout):
             ops("r", "t", model="m")
-        self.assertEqual(decide.call_count, MAX_ATTEMPTS)
+        self.assertEqual(decide.call_count, RUNAWAY_LIMIT)
+        self.assertTrue(any("safety ceiling" in line for line in log))
+
+    def test_without_its_model_it_falls_back_to_a_short_fixed_policy(self):
+        decide = Mock(side_effect=TransientTimeout("slow."))
+        ops, _ = make(decide, Mock(side_effect=SystemExit("ops model down.")))
+        with self.assertRaises(TransientTimeout):
+            ops("r", "t", model="m")
+        self.assertEqual(decide.call_count, FALLBACK_ATTEMPTS)
+
+    def test_interactive_runs_never_retry_behind_the_humans_back(self):
+        decide = Mock(side_effect=RetryableAgentError("HTTP 503."))
+        advisor = Mock()
+        ops, _ = make(decide, advisor, autonomous=False)
+        with self.assertRaises(RetryableAgentError):
+            ops("r", "t", model="m")
+        self.assertEqual(decide.call_count, 1)
+        advisor.assert_not_called()
 
     def test_non_retryable_errors_pass_straight_through(self):
         decide = Mock(side_effect=SystemExit("HTTP 401."))
@@ -81,7 +113,7 @@ class OperationsTests(TestCase):
         advisor.assert_not_called()
 
     def test_slow_success_can_trigger_a_proactive_reroute(self):
-        times = iter([0, 90, 100, 101])
+        times = iter([0, 0, 90, 100, 100, 101])
         decide = Mock(return_value="ok")
         advisor = Mock(return_value=decision("switch_route", "smart-anthropic"))
         ops = Operations(decide, advisor=advisor, routes=["smart-auto", "smart-anthropic"],
@@ -96,6 +128,8 @@ class OperationsTests(TestCase):
         self.assertEqual(ops.stage_failed(["QA did not return clean JSON."]), "s")
         ops, _ = make(Mock(), Mock(return_value=decision("retry")))
         self.assertEqual(ops.stage_failed(["x"]), "r")
+        ops, _ = make(Mock(), Mock(side_effect=SystemExit("down")))
+        self.assertEqual(ops.stage_failed(["x"]), "s")
 
 
 class OperationsToolTests(TestCase):

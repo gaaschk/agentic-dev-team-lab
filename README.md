@@ -92,23 +92,45 @@ override a real blocker or substitute for an approval.
 
 In the web UI, an **Operations agent** (`team_agents/operations.py`, prompt in
 `team_agents/roles/operations.md`, model via `LAB_OPERATIONS_MODEL`) handles runtime
-problems by reasoning about them, not by following a fixed rule. It works on
-single model calls, not whole stages. Each call is read-only, so repeating one
-never repeats other work.
+problems by reasoning about them, not by following a fixed rule.
 
-- When a call fails (timeout, 429/5xx, dropped connection), the agent gets
-  the error, the stage, how long the call ran, the timeout used, this run's
-  call history (route, latency, outcome), and the router's real routes from
-  `/v1/models`. It then picks one action: `retry` (with a wait and timeout it
-  chooses), `switch_route` (used for the rest of the run), or `give_up`.
-- When a call succeeds but takes 60s or more, the agent is asked whether to
-  move later calls to another route before a timeout happens.
-- In an autonomous run, it also decides the stage-level retry gate (for
-  example, malformed output): retry, retry on another route, or stop the run.
+**Interactive runs (Autonomous unchecked)** keep the behavior above, plus one
+automatic retry per run for a genuine timeout on a stage marked
+`auto_retryable` (`AgentRetry(auto_retries=1)`); anything else goes straight
+to you. The CLI asks immediately (`auto_retries=0`). Operations never retries a failed call behind your back; it only
+moves later calls to another route when a call is slow.
 
-Before deciding, the agent can investigate with its workbench tools (see
-below), and after a recovery works or it gives up, it's asked to record the
-outcome in its memory.
+**Autonomous runs:** Operations is the only thing that decides retries, at
+both levels, so there are no stacked retry budgets.
+
+- When a model call fails (timeout, 429/5xx, dropped connection), the agent
+  gets the error, the stage, how long the call ran, the timeout used, how
+  many attempts and seconds this call has taken, totals for the run (model
+  calls, failed calls, stage retries), recent call history (route, latency,
+  outcome), and the router's real routes from `/v1/models`. It picks one
+  action: `retry` (with a wait and timeout it chooses), `switch_route` (used
+  for the rest of the run), or `give_up`. **It decides how many retries a
+  failure is worth.** Each call is read-only, so repeating one never repeats
+  other work.
+- When a stage fails (for example, malformed output), it decides whether to
+  retry the stage, retry it on another route, or stop the run, and it's asked
+  again after each failed stage retry.
+- When a call succeeds but takes 60s or more, it's asked whether to move
+  later calls to another route before a timeout happens.
+
+Before deciding, it can investigate with its workbench tools (see below), and
+after a recovery works or it gives up, it records the outcome in its memory.
+
+Hard limits that stay in code:
+- A safety ceiling of 25 attempts per call, and 25 stage retries per run.
+  This catches an agent stuck in a loop; it isn't a retry budget.
+- Only routes the router lists are accepted; waits and timeouts are clamped.
+- If its own model can't be reached (30s timeout per step), a call gets at
+  most 3 attempts with backoff, and a failed stage stops the run cleanly.
+- Its own calls follow its route switches, so it stops using a route it
+  found hung.
+
+Every decision and its reason is logged with an `[operations]` prefix.
 
 ### Every agent's workspace and memory
 
@@ -139,28 +161,10 @@ your machine. Their prompts tell them to treat that text as data, but a
 prompt is not a sandbox. File tools are always limited to each agent's own
 workspace.
 
-The operations agent's other limits are fixed in code. The agent gets at most 4 attempts per
-call, and only routes the router lists are accepted. Its own model calls
-follow the same route switches, so it stops using a route it found hung. Waits and timeouts are clamped to a range. Its own model call has a
-30s timeout; if that call fails, a fixed backoff-and-retry rule takes over,
-so a router outage can't stall the run. Every decision and its reason is
-logged with an `[operations]` prefix.
-
-Above that, `AgentRetry(auto_retries=N)` adds a stage-level layer in front of that choice:
-it spends a budget of `N` automatic retries for the whole run — not per
-stage — on its own, logging each attempt, before ever asking a human. Only a
-`TransientTimeout` (a genuine model/network timeout) is eligible, and only on
-a workflow `Step` explicitly marked `auto_retryable=True`; a malformed or
-invalid response, or any other `RetryableAgentError`, always goes straight to
-the human choice above, since repeating a stage can repeat earlier model
-calls within it. The web UI runs with `auto_retries=1`; the CLI defaults to
-`0` (asks immediately, as above). Once that budget is spent, a failure would
-normally fall back to the same human retry/stop choice — except in an
-autonomous web UI run, where the Operations agent makes that choice instead
-of waiting for a click. Before starting a web UI run,
-the same operations agent checks the environment — `SMART_ROUTER_URL`/
-`SMART_ROUTER_API_KEY` are set and the router is reachable — and refuses to
-start with a clear message instead of crashing mid-run.
+Before starting any web UI run, the operations agent also checks the
+environment: `SMART_ROUTER_URL`/`SMART_ROUTER_API_KEY` are set and the router
+is reachable. If not, it refuses to start, with a clear message, instead of
+crashing mid-run.
 
 The lab sends `X-Smart-Router-Memory: off` and requires acknowledgment. This
 disables GBrain retrieval and save-back for these requests, not usage logging.

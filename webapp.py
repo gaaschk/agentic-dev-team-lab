@@ -142,6 +142,20 @@ def make_retry_prompt(io, autonomous, ops):
     return prompt
 
 
+def build_runtime(io, autonomous, *, ask, routes=(), sleep=time.sleep):
+    """Compose the retry layers for one run. Interactive: the PR #4 behavior
+    (one scoped timeout retry, then the human decides), with no silent
+    per-call retries. Autonomous: the operations agent is the only retry
+    decider, at both the call and the stage level, so budgets don't stack."""
+    ops = Operations(ask, emit=io.emit, routes=routes, sleep=sleep, autonomous=autonomous,
+                     advisor=lambda role, task, **kw: ask(role, task, timeout=30, **kw))
+    team = Team(ops, emit=io.emit, memory=lambda role, task, *, model=None, **kw: ask(
+        role, task, model=ops.route_for(model), timeout=30, **kw))
+    retry = AgentRetry(prompt=make_retry_prompt(io, autonomous, ops), emit=io.emit,
+                       auto_retries=0 if autonomous else 1, ask_again=autonomous)
+    return ops, team, retry
+
+
 def operations_preflight():
     """The operations agent's environment check: catch misconfiguration
     before a run burns time on it, instead of a mid-run crash or timeout."""
@@ -242,17 +256,13 @@ def start_run(goal, *, autonomous=False, output_dir=None):
             io.emit(f"[operations] Writing this run's output to {run_dir}")
         team = None
         try:
-            ops = Operations(ask_role, emit=io.emit, routes=list_routes(),
-                             advisor=lambda role, task, **kw: ask_role(role, task, timeout=30, **kw))
-            team = Team(ops, emit=io.emit, memory=lambda role, task, *, model=None, **kw: ask_role(
-                role, task, model=ops.route_for(model), timeout=30, **kw))
+            ops, team, retry = build_runtime(io, autonomous, ask=ask_role, routes=list_routes())
             workflow = release_workflow(
                 decide=team,
                 review=lambda *a: ask_agent_reviewer(*a, decide=team),
                 artifact_runner=native_artifacts,
             )
             io.seed_stages([node.name for node in workflow if isinstance(node, Step)])
-            retry = AgentRetry(prompt=make_retry_prompt(io, autonomous, ops), emit=io.emit, auto_retries=1)
             approve = make_approval_prompt(io, autonomous)
             run_workflow(workflow, {"goal": goal}, retry=retry, prompt=approve, emit=io.emit,
                          on_start=io.start_stage, on_output=on_output)
