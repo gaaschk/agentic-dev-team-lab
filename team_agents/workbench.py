@@ -162,8 +162,15 @@ class Workbench:
         found = []
         for prefix, root in (("", self.workspace), (SHARED, self.shared)):
             if root and root.is_dir() and not root.is_symlink():
-                found += sorted(prefix + str(p.relative_to(root)) for p in root.rglob("*")
-                                if p.is_file() and ".tmp" not in p.relative_to(root).parts)
+                names = []
+                # This runs unsandboxed: never follow a link an agent made.
+                for folder, subfolders, filenames in os.walk(root, followlinks=False):
+                    subfolders[:] = [d for d in subfolders if d != ".tmp"]
+                    for filename in filenames:
+                        path = Path(folder, filename)
+                        if path.is_file() and not path.is_symlink():
+                            names.append(prefix + str(path.relative_to(root)))
+                found += sorted(names)
         return found
 
     def _search(self, text):

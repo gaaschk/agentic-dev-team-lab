@@ -50,6 +50,14 @@ class SharedWorkspaceTests(Workspaces):
         self.assertEqual(call(bench, "search_files", content="secret")[1], "(no matches)")
         self.assertEqual((self.root / "outside.txt").read_text(), "secret")
 
+    def test_listing_never_follows_links(self):
+        run = self.root / "run"
+        (run / "outside").symlink_to(self.root)
+        (run / "loop").symlink_to(run)
+        (run / "alias").symlink_to(self.root / "outside.txt")
+        (run / "real.txt").write_text("x")
+        self.assertEqual(self.bench("architect").files(), ["run/real.txt"])
+
     def test_a_pipe_is_refused_instead_of_hanging_the_run(self):
         os.mkfifo(self.root / "run" / "pipe")
         bench = self.bench("architect")

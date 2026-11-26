@@ -95,6 +95,14 @@ class StageDocumentWritingTests(TestCase):
                 self.assertEqual((run_dir / "implementation" / "app.py").exists(), published,
                                  (review["verdict"], security))
 
+    def test_the_team_gets_the_proposal_even_when_nothing_is_kept(self):
+        webapp = _import_webapp()
+        with TemporaryDirectory() as tmp:
+            shared = Path(tmp).resolve()
+            write = webapp.make_output_writer(None, webapp.WebIO(), shared)
+            write("Implementer", {"files": [{"path": "app.py", "content": "x"}]}, "", True)
+            self.assertEqual((shared / "proposal" / "app.py").read_text(), "x")
+
     def test_a_failed_document_write_does_not_lose_the_proposal(self):
         """Regression: publishing then crashed the run on a missing proposal."""
         webapp = _import_webapp()

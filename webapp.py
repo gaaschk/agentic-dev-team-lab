@@ -232,13 +232,20 @@ def write_implementation_files(run_dir, result, emit, folder="implementation"):
         emit(f"[operations] Wrote {target.relative_to(run_dir)}")
 
 
-def make_output_writer(run_dir, io):
+def make_output_writer(run_dir, io, shared=None):
     """The runner's on_output. Proposed code goes to draft/, and reaches
     implementation/ only after every blocking review in the run passes."""
     seen = {"proposal": None, "reviewed": False}
 
     def on_output(name, result, rendered, ok):
         io.finish_stage(name, rendered, ok, result)
+        if shared and ok and result is not None and name == "Implementer":
+            # A copy the rest of the team can read and run, whether or not
+            # outputs are kept. Never published from.
+            try:
+                write_implementation_files(shared, result, lambda text: None, folder="proposal")
+            except OSError as exc:
+                io.emit(f"[operations] Could not share the proposal with the team: {exc}")
         if not run_dir:
             return
         try:
@@ -258,9 +265,6 @@ def make_output_writer(run_dir, io):
                 io.emit(f"[operations] Could not write output for {name}: {exc}")
             if name == "Implementer":
                 write_implementation_files(run_dir, result, io.emit, folder="draft")
-                # A copy the rest of the team can read and run. Never published from.
-                write_implementation_files(run_dir / "workspace", result, lambda text: None,
-                                           folder="proposal")
             with io.lock:
                 security = any(stage["name"] == SECURITY_REVIEW for stage in io.stages)
             # A blocked security review arrives with ok=False, so never gets here.
@@ -302,8 +306,6 @@ def start_run(goal, *, autonomous=False, output_dir=None):
     run_dir = Path(output_dir) / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}" \
         if output_dir else None
 
-    on_output = make_output_writer(run_dir, io)
-
     def worker():
         _thread_io[threading.get_ident()] = io
         if run_dir:
@@ -315,6 +317,7 @@ def start_run(goal, *, autonomous=False, output_dir=None):
             else:  # nothing is kept, but the team still needs somewhere to work
                 shared = scratch = Path(tempfile.mkdtemp(prefix="lab-run-"))
             shared.mkdir(parents=True, exist_ok=True)
+            on_output = make_output_writer(run_dir, io, shared)
             ops, team, retry = build_runtime(io, autonomous, ask=ask_role, routes=list_routes(),
                                              shared=shared)
             workflow = release_workflow(
