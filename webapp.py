@@ -235,14 +235,19 @@ def make_output_writer(run_dir, io):
             if not ok or result is None:
                 write_stage_document(run_dir, name, rendered)
                 return
-            write_stage_document(run_dir, name, result)
+            # Remember results first: a failed document write must not lose them.
             if name == "Implementer":
                 seen["proposal"] = result
-                write_implementation_files(run_dir, result, io.emit, folder="draft")
             elif name == "Reviewer":
                 seen["reviewed"] = result["verdict"] == "PASS"
                 if not seen["reviewed"]:
                     io.emit("[operations] Review requires changes: the code stays in draft/.")
+            try:
+                write_stage_document(run_dir, name, result)
+            except OSError as exc:
+                io.emit(f"[operations] Could not write output for {name}: {exc}")
+            if name == "Implementer":
+                write_implementation_files(run_dir, result, io.emit, folder="draft")
             with io.lock:
                 security = any(stage["name"] == SECURITY_REVIEW for stage in io.stages)
             # A blocked security review arrives with ok=False, so never gets here.
@@ -505,15 +510,17 @@ function ensureRows(names) {
     li.appendChild(btn);
     list.appendChild(li);
   }
-  list.addEventListener('keydown', (e) => {
-    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-    e.preventDefault();
-    const rows = Array.from(document.querySelectorAll('.agent-row'));
-    const idx = rows.indexOf(document.activeElement);
-    const next = e.key === 'ArrowDown' ? Math.min(idx + 1, rows.length - 1) : Math.max(idx - 1, 0);
-    rows[next].focus();
-  });
 }
+
+// Attached once: the rows are rebuilt when the team grows, the list isn't.
+document.getElementById('agent-list').addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault();
+  const rows = Array.from(document.querySelectorAll('.agent-row'));
+  const idx = rows.indexOf(document.activeElement);
+  const next = e.key === 'ArrowDown' ? Math.min(idx + 1, rows.length - 1) : Math.max(idx - 1, 0);
+  rows[next].focus();
+});
 
 function renderList() {
   for (const stage of stages) {

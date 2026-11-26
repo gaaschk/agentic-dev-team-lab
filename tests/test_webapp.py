@@ -95,6 +95,19 @@ class StageDocumentWritingTests(TestCase):
                 self.assertEqual((run_dir / "implementation" / "app.py").exists(), published,
                                  (review["verdict"], security))
 
+    def test_a_failed_document_write_does_not_lose_the_proposal(self):
+        """Regression: publishing then crashed the run on a missing proposal."""
+        webapp = _import_webapp()
+        proposal = {"files": [{"path": "app.py", "content": "print(1)"}]}
+        with TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            io = webapp.WebIO()
+            write = webapp.make_output_writer(run_dir, io)
+            with patch.object(webapp, "write_stage_document", side_effect=OSError("disk full")):
+                write("Implementer", proposal, "", True)
+            write("Reviewer", {"verdict": "PASS", "blockers": []}, "", True)
+            self.assertTrue((run_dir / "implementation" / "app.py").exists())
+
     def test_refuses_to_write_outside_the_run_directory(self):
         with TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
