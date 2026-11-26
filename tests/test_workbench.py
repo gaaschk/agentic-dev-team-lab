@@ -82,15 +82,25 @@ class TeamTests(TestCase):
     def test_one_memory_failure_turns_memory_off_for_the_run(self):
         memory_calls = []
 
-        def memory(role, task, *, stage, **kwargs):
-            memory_calls.append(stage)
-            raise SystemExit("router down")
-
         def decide(role, task, *, stage, **kwargs):
+            if stage.endswith(" memory"):
+                memory_calls.append((stage, kwargs.get("timeout")))
+                raise SystemExit("recovery gave up")
             return "final"
 
-        team = Team(decide, emit=lambda t: None, shell=False, memory=memory)
+        team = Team(decide, emit=lambda t: None, shell=False)
         for stage in ("Product Lead", "Architect", "QA"):
             self.assertEqual(team("role", "t", stage=stage, model="m"), "final")
         team.reflect({})
-        self.assertEqual(memory_calls, ["Product Lead memory"])
+        self.assertEqual(memory_calls, [("Product Lead memory", 90)])
+
+    def test_reflection_that_writes_nothing_is_reported(self):
+        decide = FakeDecide([step("decide"), json.dumps({"tool": "decide", "path": "",
+                                                          "content": "", "command": ""})])
+        log = []
+        team = Team(decide, emit=log.append, shell=False)
+        team("role", "t", stage="QA", model="m")
+        team.reflect({})
+        self.assertIn("[QA] Recorded nothing to memory this run.", log)
+        reflect_format = decide.calls[-1][2]["response_format"]["json_schema"]["schema"]
+        self.assertNotIn("notes", reflect_format["properties"])

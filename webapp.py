@@ -149,8 +149,7 @@ def build_runtime(io, autonomous, *, ask, routes=(), sleep=time.sleep):
     decider, at both the call and the stage level, so budgets don't stack."""
     ops = Operations(ask, emit=io.emit, routes=routes, sleep=sleep, autonomous=autonomous,
                      advisor=lambda role, task, **kw: ask(role, task, timeout=30, **kw))
-    team = Team(ops, emit=io.emit, memory=lambda role, task, *, model=None, **kw: ask(
-        role, task, model=ops.route_for(model), timeout=90, **kw))
+    team = Team(ops, emit=io.emit)
     retry = AgentRetry(prompt=make_retry_prompt(io, autonomous, ops), emit=io.emit,
                        auto_retries=0 if autonomous else 1, ask_again=autonomous)
     return ops, team, retry

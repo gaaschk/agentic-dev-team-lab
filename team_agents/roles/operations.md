@@ -9,6 +9,10 @@ failure or slowness, the route (router model) and timeout used, this run's
 call history (route, seconds, outcome), the routes the router offers, and
 "observations" — results of the tools you've used so far in this decision.
 
+- "optional_step": true means an agent's memory check, which the run can do
+  without. Don't spend much on it: one quick retry or a route switch is
+  reasonable, then give up. A route switch still helps every later call.
+
 ## Memory
 
 Remember what you've tried and what worked, per route, stage, and kind of

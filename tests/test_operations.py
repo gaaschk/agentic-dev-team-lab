@@ -217,3 +217,12 @@ class OperationsToolTests(TestCase):
         self.assertEqual(decide.call_count, 1)
         self.assertEqual(slept, [])
         self.assertTrue(any("would reach the run-wide recovery limit" in line for line in log))
+
+    def test_memory_steps_are_flagged_optional_and_keep_their_timeout(self):
+        decide = Mock(side_effect=[TransientTimeout("slow."), "ok"])
+        advisor = Mock(return_value=decision("switch_route", "smart-anthropic", timeout=45))
+        ops, _ = make(decide, advisor)
+        ops("r", "t", model="smart-auto", stage="Architect memory", timeout=90)
+        self.assertEqual(decide.call_args_list[0].kwargs["timeout"], 90)
+        self.assertEqual(decide.call_args_list[1].kwargs["timeout"], 45)
+        self.assertTrue(json.loads(advisor.call_args_list[0].args[1])["optional_step"])

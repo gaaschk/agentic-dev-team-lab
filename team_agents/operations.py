@@ -129,7 +129,7 @@ class Operations:
 
     def __call__(self, role, task, *, model=None, stage="Model", **kwargs):
         primary = model or resolve_model()
-        timeout = None
+        timeout = kwargs.pop("timeout", None)
         attempt = 0
         call_started = self.clock()
         while True:
@@ -154,6 +154,7 @@ class Operations:
                     raise
                 decision = self.think({
                     "situation": "call_failed", "stage": stage, "route": route,
+                    "optional_step": stage.endswith(" memory"),
                     "error": str(failure), "seconds": seconds,
                     "timeout_used": timeout or DEFAULT_TIMEOUT,
                     "attempt": attempt,

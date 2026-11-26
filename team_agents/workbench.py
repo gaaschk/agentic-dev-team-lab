@@ -131,17 +131,19 @@ class Workbench:
 
 AGENT_STAGES = ("Product Lead", "Architect", "QA", "Implementer", "Reviewer")
 PREP_FORMAT = step_format("agent_step", {"notes": {"type": "string"}})
+REFLECT_FORMAT = step_format("agent_reflection")  # no notes field: lessons persist only via write_file
 
 
 class Team:
     """Wraps decide so each agent consults its own memory and tools before its
     final answer, and records lessons from the run when it ends."""
 
-    def __init__(self, decide, *, emit, shell=None, memory=None):
+    def __init__(self, decide, *, emit, shell=None, memory_timeout=90):
         self.decide = decide
-        # Memory steps are optional: give them a cheap, single-attempt path
-        # (memory=...) so an outage can't stall the run, and stop after one failure.
-        self.memory = memory or decide
+        # Memory steps go through the same decide (operations) as everything
+        # else, so a hung route gets rerouted. If a memory step still fails,
+        # recovery already gave up, so memory is off for the rest of the run.
+        self.memory_timeout = memory_timeout
         self.memory_down = False
         self.emit = emit
         self.shell = shell
@@ -154,7 +156,8 @@ class Team:
 
     def _ask(self, stage, model):
         def ask(system, task, **kwargs):
-            return self.memory(system, task, model=model, stage=f"{stage} memory", **kwargs)
+            return self.decide(system, task, model=model, stage=f"{stage} memory",
+                               timeout=self.memory_timeout, **kwargs)
         return ask
 
     def __call__(self, role, task, *, stage="Model", **kwargs):
@@ -173,9 +176,11 @@ class Team:
         context = {
             "situation": "before_answering",
             "task": task[:4000],
-            "instructions": "Check your memory for lessons relevant to this task and use tools "
-                            "if they help. Then decide, putting anything useful for your answer "
-                            "in 'notes' (or leave it empty).",
+            "instructions": "This is a short preparation step, not your answer. Check your "
+                            "memory for lessons relevant to this task, then decide, putting "
+                            "anything useful in 'notes' (or leave it empty). Your workspace is "
+                            "for your own notes and memory: don't write your deliverable there. "
+                            "You'll produce your actual answer in the next step.",
         }
         try:
             step, _ = self.bench(stage).loop(self._ask(stage, self.models[stage]), role, context,
@@ -195,15 +200,19 @@ class Team:
                 "situation": "run_finished",
                 "your_stage": stage,
                 "run_outcome": outcome,
-                "instructions": "This is one run. Record it in your memory once: what you "
-                                "produced, how it was received (approvals, review, failures), "
-                                "and what to do differently. Merge with existing notes rather "
-                                "than duplicating them. Once your observations show the write "
-                                "succeeded, decide.",
+                "instructions": "This is one run. Record it in your memory once, using "
+                                "write_file: anything you don't write to a file is lost when "
+                                "this run ends. Record what you produced, how it was received "
+                                "(approvals, review, failures), and what to do differently. "
+                                "Merge with existing notes rather than duplicating them. Once "
+                                "your observations show the write succeeded, decide.",
             }
             try:
-                self.bench(stage).loop(self._ask(stage, self.models[stage]), self.roles[stage],
-                                       context, fmt=PREP_FORMAT, emit=self.emit, label=stage)
+                _, observations = self.bench(stage).loop(
+                    self._ask(stage, self.models[stage]), self.roles[stage], context,
+                    fmt=REFLECT_FORMAT, emit=self.emit, label=stage)
+                if not any(o["tool"] == "write_file" for o in observations):
+                    self.emit(f"[{stage}] Recorded nothing to memory this run.")
             except (SystemExit, Exception) as exc:
                 self.memory_down = True
                 self.emit(f"[{stage}] Couldn't record lessons ({exc}); skipping the rest.")
