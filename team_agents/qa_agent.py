@@ -63,7 +63,7 @@ def parse_plan(raw, count):
     return data
 
 
-def request_plan(plan, design, *, decide, failure=None, artifact_runner=run):
+def request_plan(plan, design, ux_spec=None, *, decide, failure=None, artifact_runner=run):
     criteria = [
         {"criterion_id": number, "requirement": text}
         for number, text in enumerate(plan["acceptance_criteria"], start=1)
@@ -80,6 +80,9 @@ def request_plan(plan, design, *, decide, failure=None, artifact_runner=run):
         })
     }
 
+    if ux_spec is not None:
+        artifacts["ux_spec"] = Artifact("UX advice, not additional requirements", ux_spec)
+
     task = (
         "Propose at least one black-box check per numbered approved criterion. "
         f"Return no more than {max(12, len(criteria) * 3)} checks. "
@@ -89,7 +92,7 @@ def request_plan(plan, design, *, decide, failure=None, artifact_runner=run):
         task += " Prior failure: " + str(failure).split(" (request ID:", 1)[0]
     raw = artifact_runner(
         role=role, stage="QA", task=task, artifacts=artifacts,
-        required={"requirements"}, output_format=QA_FORMAT,
+        required=set(artifacts), output_format=QA_FORMAT,
         model=resolve_model("LAB_QA_MODEL"), decide=decide,
     )
     return parse_plan(raw, len(criteria))

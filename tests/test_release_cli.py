@@ -24,7 +24,8 @@ class ReleaseCLITests(TestCase):
                 steps, state = engine.call_args.args
                 self.assertEqual(state, {"goal": expected})
                 self.assertEqual([getattr(step, "name", "Approval") for step in steps], [
-                    "Product Lead", "Approval", "Architect", "Approval", "QA", "Implementer", "Reviewer",
+                    "Product Lead", "Approval", "UX Designer", "Architect", "Approval", "QA",
+                        "Implementer", "Reviewer", "Security Reviewer",
                 ])
 
     def test_requires_exactly_one_nonblank_input(self):

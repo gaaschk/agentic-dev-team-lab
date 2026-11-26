@@ -32,7 +32,7 @@ class RuntimeSelectionTests(TestCase):
         selector.assert_called_once_with("openai", decide=plan_release.ask_role)
         engine.assert_called_once()
         self.assertEqual(engine.call_args.args[1], {"goal": "Example goal"})
-        self.assertEqual(engine.call_args.args[0][-1].name, "Reviewer")
+        self.assertEqual(engine.call_args.args[0][-1].name, "Security Reviewer")
 
 
 @skipUnless(importlib.util.find_spec("agents"), "optional OpenAI Agents SDK not installed")

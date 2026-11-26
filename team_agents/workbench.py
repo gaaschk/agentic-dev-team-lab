@@ -146,7 +146,8 @@ class Workbench:
         return None, observations
 
 
-AGENT_STAGES = ("Product Lead", "Architect", "QA", "Implementer", "Reviewer")
+AGENT_STAGES = ("Product Lead", "Architect", "QA", "Implementer", "Reviewer",
+                "UX Designer", "Security Reviewer")
 PREP_FORMAT = step_format("agent_step", {"notes": {"type": "string"}})
 REFLECT_FORMAT = step_format("agent_reflection")  # no notes field: lessons persist only via write_file
 

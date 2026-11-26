@@ -73,13 +73,12 @@ def parse_files(raw):
     return data
 
 
-def implement(_failure, goal, plan, design, *, decide):
+def implement(_failure, goal, plan, design, ux_spec=None, *, decide):
     implementer = (ROLES_DIR / "implementer.md").read_text(encoding="utf-8")
-    implementation_request = json.dumps({
-        "goal": goal,
-        "approved_plan": plan,
-        "approved_design": design,
-    })
+    request = {"goal": goal, "approved_plan": plan, "approved_design": design}
+    if ux_spec is not None:
+        request["ux_spec"] = ux_spec
+    implementation_request = json.dumps(request)
     raw = decide(
         implementer,
         "Propose file paths and file contents for the approved product below. "

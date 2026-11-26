@@ -34,6 +34,7 @@ class LoanSubmissionTests(TestCase):
             "out_of_scope": ["Credit decisions", "Disbursement"],
             "acceptance_criteria": list(CRITERIA),
             "open_questions": [],
+            "specialists": [],
         }
         design = {
             "components": ["Pure state transition"],

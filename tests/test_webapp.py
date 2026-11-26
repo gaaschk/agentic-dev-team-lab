@@ -159,6 +159,12 @@ class StartRunOutputErrorTests(TestCase):
         self.assertTrue(qa.endswith("criterion 3"))
         self.assertIn("truncated", implementer)
 
+    def test_a_skipped_stage_is_shown_as_skipped_not_pending(self):
+        io = self.webapp.WebIO()
+        io.seed_stages(["UX Designer", "Architect"])
+        io.skip_stage("UX Designer")
+        self.assertEqual([s["status"] for s in io.stages], ["skipped", "pending"])
+
     def test_output_dir_must_be_a_string(self):
         client = self.webapp.app.test_client()
         res = client.post("/start", json={"goal": "x", "output_dir": 123})

@@ -3,6 +3,8 @@
 Design independent acceptance checks using only the approved scope, numbered
 criteria, and public interface. You do not have access to implementation code.
 
+- A UX spec, if offered, can sharpen how a criterion is checked. It adds no
+  requirements.
 - Map every check to an existing criterion ID and cover every approved criterion.
 - Write a short name, an isolated setup, the action, and an observable expected
   result. A negative check is useful when it verifies a stated rule.

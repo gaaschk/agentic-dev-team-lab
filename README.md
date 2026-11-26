@@ -31,6 +31,23 @@ python3 -B plan_release.py --example reading-list
    validated so every path is relative and can't escape the output location.
 5. The **Reviewer** reads the exact proposal and approved criteria and reports code blockers.
 
+### The team depends on the brief
+
+The Product Lead's plan has a `specialists` list, chosen from a fixed roster,
+with a reason for each. It can be empty. You see it in the plan, and approving
+the plan approves the team; there is no separate step. In an autonomous web UI
+run the plan is approved automatically, so nobody sees the choice first.
+
+| Specialist | Joins when the release has | Runs | Authority |
+| --- | --- | --- | --- |
+| **UX Designer** | an interface whose flows, wording, errors, or accessibility need design | before the Architect | Advises. The Architect, QA, and Implementer receive its UX spec. |
+| **Security Reviewer** | authentication, secrets, sensitive data, untrusted input, command or file execution, or network access | after the Reviewer | Can block. `CHANGES_REQUIRED` ends the run as failed, with no retry. |
+
+A specialist who isn't chosen is skipped. A Security Reviewer block comes after
+the proposal exists: nothing is sent back to the Implementer, and if the web UI
+is writing outputs, **the blocked files stay in the output folder**. To add a
+specialist, see `team_agents/specialists.py`.
+
 QA plans are **not test results**. The generic workflow never runs model-proposed
 commands or code. Actual pass/fail evidence must come from a separately wired,
 deterministic check. The [reading-list example](examples/reading_list/README.md)
@@ -139,7 +156,8 @@ Every decision and its reason is logged with an `[operations]` prefix.
 ### Every agent's workspace and memory
 
 In the web UI, every agent (Product Lead, Architect, QA, Implementer,
-Reviewer, and Operations) has its own persistent workspace under `.agents/`
+Reviewer, any chosen specialist, and Operations) has its own persistent
+workspace under `.agents/`
 (git-ignored; `LAB_AGENTS_HOME` to move it), for example
 `.agents/architect/`. Inside it, the agent can list, read, and write files,
 and it keeps its own memory of what it tried and what worked. It decides the
@@ -189,7 +207,8 @@ Each call prints elapsed time and an ID you can find in the router's
 - `workflows/runner.py`: runs those steps and enforces approvals and retry limits.
 - `team_agents/`: one Python module per role (`product_lead_agent.py`,
   `architect_agent.py`, `qa_agent.py`, `implementer_agent.py`, and
-  `reviewer_agent.py`), plus shared helpers and Markdown prompts under `roles/`.
+  `reviewer_agent.py`), `specialists.py` for the optional UX Designer and
+  Security Reviewer, plus shared helpers and Markdown prompts under `roles/`.
 - `examples/reading_list/`: sample contract, Reviewer fixtures, one bounded
   Implementer exercise, and deterministic reading-list QA.
 - [`examples/loan_submission/`](examples/loan_submission/README.md): fictional state transitions and duplicate-submission checks.
@@ -203,7 +222,8 @@ DEFAULT_MODEL=smart-auto python3 -B plan_release.py "Build a local notes CLI."
 ```
 
 A role-specific setting wins: `LAB_PRODUCT_MODEL`, `LAB_ARCHITECT_MODEL`,
-`LAB_QA_MODEL`, `LAB_IMPLEMENTER_MODEL`, or `LAB_REVIEW_MODEL`. If neither setting
+`LAB_QA_MODEL`, `LAB_IMPLEMENTER_MODEL`, `LAB_REVIEW_MODEL`, `LAB_UX_MODEL`, or
+`LAB_SECURITY_MODEL`. If neither setting
 is set, the role uses `smart-auto`. Empty values count as unset. This also
 applies to the standalone reading-list Implementer and Reviewer exercises.
 
@@ -213,7 +233,7 @@ The original scripted loan exercise is archived separately at
 ## Choose a workflow runtime
 
 The native runtime remains the default and has no third-party dependencies.
-`--workflow-runtime openai` runs all five roles with the OpenAI Agents SDK and
+`--workflow-runtime openai` runs every role with the OpenAI Agents SDK and
 includes QA planning automatically. The host still enforces both approval
 gates, artifact validation, and bounded retries. This runtime only holds the
 Implementer's proposal in memory; it never writes or runs it (only the web
@@ -236,7 +256,7 @@ DEFAULT_MODEL=smart-auto .venv/bin/python -B plan_release.py --workflow-runtime 
 On the Mac with the router project's SDK already installed, you can use
 `~/ProjectHome/smart-ai-router/.venv/bin/python` instead. Set
 `SMART_ROUTER_URL` and `SMART_ROUTER_API_KEY` as usual. Unset any
-`LAB_*_MODEL` role overrides if you want all five roles to use the same route.
+`LAB_*_MODEL` role overrides if you want every role to use the same route.
 
 To compare just the Reviewer backends, run the separate fixture command:
 

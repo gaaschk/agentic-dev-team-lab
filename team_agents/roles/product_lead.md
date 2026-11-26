@@ -20,5 +20,17 @@ Return one JSON object with exactly these fields:
 - `out_of_scope`: list of strings
 - `acceptance_criteria`: list of strings
 - `open_questions`: list of strings
+- `specialists`: list of `{"name", "reason"}` objects: who else this release needs
+
+## Specialists
+
+Add a specialist only when the work needs one, with a one-sentence reason drawn
+from the brief. Each costs time and money, so `[]` is a normal answer.
+
+- `UX Designer`: people use an interface whose flows, wording, errors, or
+  accessibility need real design. Not for internal changes or a trivial command.
+- `Security Reviewer`: the release handles authentication, permissions, secrets,
+  personal or financial data, untrusted input, file or command execution, or
+  network access. It can block the release.
 
 Return JSON only, with no Markdown fences.

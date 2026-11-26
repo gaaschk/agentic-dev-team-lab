@@ -6,6 +6,18 @@ from . import ROLES_DIR
 from .agent_retry import RetryableAgentError
 from .model_config import resolve_model
 from .role_agents import Artifact, run as run_agent
+from .specialists import ROSTER
+
+
+def _valid_team(team):
+    return (
+        isinstance(team, list)
+        and all(isinstance(member, dict) and set(member) == {"name", "reason"}
+                and member["name"] in ROSTER
+                and isinstance(member["reason"], str) and member["reason"].strip()
+                for member in team)
+        and len({member["name"] for member in team}) == len(team)
+    )
 
 
 def product_plan(_failure, goal, *, decide, artifact_runner=run_agent):
@@ -13,6 +25,11 @@ def product_plan(_failure, goal, *, decide, artifact_runner=run_agent):
     properties = {"release_goal": {"type": "string"}}
     for field in list_fields:
         properties[field] = {"type": "array", "items": {"type": "string"}}
+    member = {"name": {"type": "string", "enum": list(ROSTER)}, "reason": {"type": "string"}}
+    properties["specialists"] = {"type": "array", "items": {
+        "type": "object", "properties": member, "required": list(member),
+        "additionalProperties": False,
+    }}
 
     plan_format = {
         "type": "json_schema",
@@ -55,6 +72,7 @@ def product_plan(_failure, goal, *, decide, artifact_runner=run_agent):
             or not all(isinstance(item, str) and item.strip() for item in plan[field])
             for field in list_fields
         )
+        or not _valid_team(plan["specialists"])
     ):
         raise RetryableAgentError("Product Lead response does not match the plan format.")
     return plan

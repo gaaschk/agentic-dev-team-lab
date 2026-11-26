@@ -72,11 +72,11 @@ def ask_agent_reviewer(role, plan, design, proposal, *, decide, artifact_runner=
     )
 
 
-def parse_review(raw):
+def parse_review(raw, who="Reviewer"):
     try:
         result = json.loads(raw)
     except (TypeError, ValueError):
-        raise RetryableAgentError("Reviewer did not return clean JSON.") from None
+        raise RetryableAgentError(f"{who} did not return clean JSON.") from None
     if (not isinstance(result, dict) or set(result) != {"verdict", "blockers"}
             or result["verdict"] not in ("PASS", "CHANGES_REQUIRED")
             or not isinstance(result["blockers"], list)
@@ -86,7 +86,7 @@ def parse_review(raw):
                           for value in item.values())
                    for item in result["blockers"])
             or (result["verdict"] == "PASS") == bool(result["blockers"])):
-        raise RetryableAgentError("Reviewer response does not match the verdict format.")
+        raise RetryableAgentError(f"{who} response does not match the verdict format.")
     return result
 
 

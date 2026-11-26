@@ -92,6 +92,14 @@ class WebIO:
                     stage["output"] = output
                     return
 
+    def skip_stage(self, name):
+        with self.lock:
+            for stage in self.stages:
+                if stage["name"] == name and stage["status"] == "pending":
+                    stage["status"] = "skipped"
+                    stage["output"] = "Not part of this run's team."
+                    return
+
     def prompt(self, text):
         with self.lock:
             self.pending_id += 1
@@ -274,7 +282,8 @@ def start_run(goal, *, autonomous=False, output_dir=None):
             io.seed_stages([node.name for node in workflow if isinstance(node, Step)])
             approve = make_approval_prompt(io, autonomous)
             run_workflow(workflow, {"goal": goal}, retry=retry, prompt=approve, emit=io.emit,
-                         on_start=io.start_stage, on_output=on_output)
+                         on_start=io.start_stage, on_output=on_output,
+                         on_skip=io.skip_stage)
         except SystemExit as exc:
             io.emit(str(exc))
         finally:
@@ -318,7 +327,8 @@ PAGE = """
     background: #fff; padding: 0.4rem 0.6rem; cursor: pointer; display: flex;
     justify-content: space-between; gap: 0.5rem;
   }
-  .agent-row[disabled] { color: #999; cursor: default; }
+  .agent-row[disabled], .agent-row.status-skipped { color: #999; }
+  .agent-row[disabled] { cursor: default; }
   .agent-row.selected { border-color: #555; background: #f0f0f0; }
   .agent-row .dot { width: 1.2em; display: inline-block; }
   .agent-row.status-running .dot { color: #b58900; }
@@ -450,7 +460,7 @@ function renderGate(state) {
 }
 
 function statusGlyph(status) {
-  return {pending: '\\u25cb', running: '\\u25cf', done: '\\u2713', failed: '\\u2717'}[status] || '\\u25cb';
+  return {pending: '\\u25cb', running: '\\u25cf', done: '\\u2713', failed: '\\u2717', skipped: '\\u2013'}[status] || '\\u25cb';
 }
 
 function ensureRows(names) {
@@ -523,7 +533,7 @@ function autoFollow() {
   const runningStage = stages.find(s => s.status === 'running');
   const target = runningStage
     ? runningStage.name
-    : [...stages].reverse().find(s => s.status !== 'pending')?.name;
+    : [...stages].reverse().find(s => !['pending', 'skipped'].includes(s.status))?.name;
   if (target && target !== selected) {
     selected = target;
     renderList();

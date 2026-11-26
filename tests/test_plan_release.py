@@ -14,6 +14,7 @@ PLAN = {
     "out_of_scope": [],
     "acceptance_criteria": ["See a saved book after restarting."],
     "open_questions": [],
+    "specialists": [],
 }
 
 DESIGN = {
