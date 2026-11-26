@@ -6,7 +6,7 @@ from unittest import TestCase
 from unittest.mock import Mock, patch
 
 from team_agents.agent_retry import RetryableAgentError, TransientTimeout
-from team_agents.operations import FALLBACK_ATTEMPTS, MAX_FAILED_CALLS, Operations
+from team_agents.operations import FALLBACK_ATTEMPTS, MAX_FAILURES, Operations
 
 
 def step(tool, path="", content="", command=""):
@@ -85,7 +85,7 @@ class OperationsTests(TestCase):
         ops, log = make(decide, Mock(return_value=decision("retry")))
         with self.assertRaises(TransientTimeout):
             ops("r", "t", model="m")
-        self.assertEqual(decide.call_count, MAX_FAILED_CALLS)
+        self.assertEqual(decide.call_count, MAX_FAILURES)
         self.assertTrue(any("recovery limit reached" in line for line in log))
         # The limit is run-wide: a new call (a replayed stage) can't reset it.
         decide.reset_mock()
@@ -195,3 +195,13 @@ class OperationsToolTests(TestCase):
         with patch.dict(os.environ, {"LAB_OPERATIONS_MODEL": "smart-auto"}):
             ops("r", "t", model="smart-auto")
         self.assertEqual(advisor.call_args_list[-1].kwargs["model"], "smart-anthropic")
+
+    def test_stage_failures_with_successful_calls_still_hit_the_run_wide_limit(self):
+        """Regression: invalid output fails a stage without any failed call,
+        so stage replays used to bypass the run-wide limit entirely."""
+        from team_agents.operations import MAX_FAILURES
+        ops, log = make(Mock(), Mock(return_value=decision("retry")))
+        choices = [ops.stage_failed(["QA did not return clean JSON."]) for _ in range(MAX_FAILURES)]
+        self.assertEqual(choices[:-1], ["r"] * (MAX_FAILURES - 1))
+        self.assertEqual(choices[-1], "s")
+        self.assertTrue(any("recovery limit reached" in line for line in log))

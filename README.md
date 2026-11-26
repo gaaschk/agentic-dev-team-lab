@@ -124,7 +124,7 @@ after a recovery works or it gives up, it records the outcome in its memory.
 Hard limits that stay in code:
 - One run-wide hard stop that no retry path can reset: 30 minutes of
   recovery time (time spent in failed calls plus retry waits;
-  `LAB_OPERATIONS_RECOVERY_SECONDS` to change it) or 100 failed model calls,
+  `LAB_OPERATIONS_RECOVERY_SECONDS` to change it) or 100 failures (failed model calls plus failed stages, such as invalid output),
   whichever comes first. After that, nothing is retried and the run stops.
   Healthy work doesn't count toward it, and the agent sees how much it has
   used. It catches an agent stuck in a loop; it isn't a retry count.

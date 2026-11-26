@@ -234,7 +234,7 @@ class RetryLayeringTests(TestCase):
         """Regression: per-call and per-stage ceilings used to reset on every
         stage replay and compound (25 x 26 = 650 calls)."""
         from team_agents.agent_retry import TransientTimeout
-        from team_agents.operations import MAX_FAILED_CALLS
+        from team_agents.operations import MAX_FAILURES
         counts = self.run_stage(autonomous=True, failure=TransientTimeout("slow."),
                                 advisor=_ops_decision("retry"))
-        self.assertEqual(counts["primary"], MAX_FAILED_CALLS)
+        self.assertEqual(counts["primary"], MAX_FAILURES)

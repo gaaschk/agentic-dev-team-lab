@@ -19,7 +19,7 @@ from .workbench import Workbench, home_for, step_format
 # Run-wide hard stop: no retry path can reset these. The agent decides how
 # many retries a failure is worth within them; they aren't a retry count.
 RECOVERY_SECONDS = 1800  # failed-call time plus retry waits; LAB_OPERATIONS_RECOVERY_SECONDS
-MAX_FAILED_CALLS = 100
+MAX_FAILURES = 100  # failed model calls plus failed stages (e.g. invalid output)
 FALLBACK_ATTEMPTS = 3  # only when the operations model can't be consulted
 SLOW_SECONDS = 60
 HISTORY_LIMIT = 20
@@ -60,6 +60,7 @@ class Operations:
         self.workspace = self.bench.workspace
         self.autonomous = autonomous
         self.stage_retries = 0
+        self.stage_failures = 0
         self.recovery_seconds = 0.0
         self.recovery_limit = float(os.getenv("LAB_OPERATIONS_RECOVERY_SECONDS") or RECOVERY_SECONDS)
         self.history = []
@@ -77,7 +78,8 @@ class Operations:
         failures = sum(1 for h in self.history if h["outcome"] != "ok")
         context = {**situation, "history": self.history[-HISTORY_LIMIT:],
                    "run_totals": {"model_calls": len(self.history), "failed_calls": failures,
-                                  "max_failed_calls": MAX_FAILED_CALLS,
+                                  "failed_stages": self.stage_failures,
+                                  "max_failures": MAX_FAILURES,
                                   "stage_retries": self.stage_retries,
                                   "recovery_seconds_used": round(self.recovery_seconds, 1),
                                   "recovery_seconds_limit": self.recovery_limit},
@@ -189,17 +191,21 @@ class Operations:
                     self.switch(route, decision["route"], decision["reason"])
             return answer
 
-    def failed_calls(self):
-        return sum(1 for h in self.history if h["outcome"] != "ok")
+    def failures(self):
+        failed_calls = sum(1 for h in self.history if h["outcome"] != "ok")
+        return failed_calls + self.stage_failures
 
     def exhausted(self):
-        return self.recovery_seconds >= self.recovery_limit or self.failed_calls() >= MAX_FAILED_CALLS
+        return self.recovery_seconds >= self.recovery_limit or self.failures() >= MAX_FAILURES
 
     def limit_text(self):
         return (f"{self.recovery_seconds:.0f}s of {self.recovery_limit:.0f}s recovery time, "
-                f"{self.failed_calls()} of {MAX_FAILED_CALLS} failed calls")
+                f"{self.failures()} of {MAX_FAILURES} failures")
 
     def stage_failed(self, recent_log):
+        # A stage can fail with every model call succeeding (invalid output),
+        # so stage failures count toward the run-wide limit too.
+        self.stage_failures += 1
         """Decide the stage-level retry gate in an autonomous run: 'r' or 's'.
         The agent decides how many stage retries are worth it; without a usable
         decision, or at the run-wide recovery limit, the run stops cleanly."""
