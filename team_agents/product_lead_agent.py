@@ -8,7 +8,7 @@ from .model_config import resolve_model
 from .role_agents import Artifact, run as run_agent
 
 
-def product_plan(_failure, goal, *, decide, artifact_runner=run_agent):
+def product_plan(_failure, goal, *reports, decide, artifact_runner=run_agent):
     list_fields = ("in_scope", "out_of_scope", "acceptance_criteria", "open_questions")
     properties = {"release_goal": {"type": "string"}}
     for field in list_fields:
@@ -32,7 +32,9 @@ def product_plan(_failure, goal, *, decide, artifact_runner=run_agent):
     raw_plan = artifact_runner(
         role=product_lead, stage="Product Lead",
         task="Propose the smallest useful release for the product brief. Do not write code.",
-        artifacts={"brief": Artifact("Requester goal and constraints", goal)},
+        artifacts={"brief": Artifact(
+            "Requester goal and constraints",
+            {"goal": goal, "specialist_advice": reports} if reports else goal)},
         required={"brief"}, output_format=plan_format,
         model=resolve_model("LAB_PRODUCT_MODEL"), decide=decide,
     )

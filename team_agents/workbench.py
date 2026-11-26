@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 from .implementer_agent import is_safe_relative_path
+from .profiles import load_profiles
 
 MAX_TOOL_STEPS = 8
 COMMAND_TIMEOUT = 60
@@ -32,6 +33,10 @@ step; set "tool" to one of:
   only create, change, or delete things inside your workspace.
 - "decide": you're done with tools for now.
 Leave fields a tool doesn't use as "" or 0.
+
+These tools are allowed even if your role says to advise only or not to run
+code or change files: that limit is about the product and other systems, not
+your own workspace and memory.
 
 Keep a memory of what you've tried and what worked or didn't. You choose how
 to store it: format, files, and structure are up to you; keep it compact and
@@ -161,7 +166,11 @@ class Workbench:
         return None, observations
 
 
-AGENT_STAGES = ("Product Lead", "Architect", "QA", "Implementer", "Reviewer")
+def agent_stages():
+    """Every profiled agent gets memory and tools; Operations manages its own."""
+    return {profile.role for key, profile in load_profiles().items() if key != "operations"}
+
+
 PREP_FORMAT = step_format("agent_step", {"notes": {"type": "string"}})
 REFLECT_FORMAT = step_format("agent_reflection")  # no notes field: lessons persist only via write_file
 
@@ -193,7 +202,7 @@ class Team:
         return ask
 
     def __call__(self, role, task, *, stage="Model", **kwargs):
-        if stage in AGENT_STAGES:
+        if stage in agent_stages():
             self.roles[stage], self.models[stage] = role, kwargs.get("model")
             if stage not in self.notes:
                 self.notes[stage] = self.prepare(stage, role, task)

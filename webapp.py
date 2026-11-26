@@ -20,11 +20,12 @@ from flask import Flask, jsonify, render_template_string, request
 from plan_release import ask_role
 from team_agents.agent_retry import AgentRetry
 from team_agents.implementer_agent import is_safe_relative_path
-from team_agents.markdown import render_document
+from team_agents.markdown import render_document, to_html
 from team_agents.operations import Operations, list_routes
 from team_agents.workbench import CONTEXT_LIMIT, Team, clip
 from team_agents.role_agents import run as native_artifacts
 from team_agents.reviewer_agent import ask_agent_reviewer
+from workflows.managed import assemble, planning_workflow
 from workflows.release import release_workflow
 from workflows.runner import Step, run as run_workflow
 
@@ -76,6 +77,10 @@ class WebIO:
         with self.lock:
             self.stages = [{"name": name, "status": "pending", "output": None} for name in names]
 
+    def add_stages(self, names):
+        with self.lock:
+            self.stages += [{"name": name, "status": "pending", "output": None} for name in names]
+
     def start_stage(self, name):
         with self.lock:
             for stage in self.stages:
@@ -84,12 +89,14 @@ class WebIO:
                     return
             self.stages.append({"name": name, "status": "running", "output": None})
 
-    def finish_stage(self, name, output, ok=True):
+    def finish_stage(self, name, output, ok=True, result=None):
         with self.lock:
             for stage in reversed(self.stages):
                 if stage["name"] == name and stage["status"] == "running":
                     stage["status"] = "done" if ok else "failed"
                     stage["output"] = output
+                    # What the page shows; a failed stage has only its message.
+                    stage["html"] = to_html(result if ok and result is not None else output)
                     return
 
     def prompt(self, text):
@@ -246,7 +253,7 @@ def start_run(goal, *, autonomous=False, output_dir=None):
         if output_dir else None
 
     def on_output(name, result, rendered, ok):
-        io.finish_stage(name, rendered, ok)
+        io.finish_stage(name, rendered, ok, result)
         if not run_dir:
             return
         try:
@@ -271,10 +278,13 @@ def start_run(goal, *, autonomous=False, output_dir=None):
                 review=lambda *a: ask_agent_reviewer(*a, decide=team),
                 artifact_runner=native_artifacts,
             )
-            io.seed_stages([node.name for node in workflow if isinstance(node, Step)])
-            approve = make_approval_prompt(io, autonomous)
-            run_workflow(workflow, {"goal": goal}, retry=retry, prompt=approve, emit=io.emit,
-                         on_start=io.start_stage, on_output=on_output)
+            controls = dict(retry=retry, prompt=make_approval_prompt(io, autonomous), emit=io.emit,
+                            on_start=io.start_stage, on_output=on_output)
+            io.seed_stages(["Project Manager"])
+            state = run_workflow(planning_workflow(decide=team), {"goal": goal}, **controls)
+            nodes = assemble(state["approved_team"], workflow, decide=team)
+            io.add_stages([node.name for node in nodes if isinstance(node, Step)])
+            run_workflow(nodes, state, **controls)
         except SystemExit as exc:
             io.emit(str(exc))
         finally:
@@ -333,8 +343,15 @@ PAGE = """
   }
   .detail-header label { display: inline-flex; align-items: center; gap: 0.3em; margin: 0; }
   #detail-output {
-    margin: 0; padding: 1rem; white-space: pre-wrap; max-height: 70vh;
-    overflow-y: auto; background: #f8f8f8;
+    padding: 0 1.25rem 1rem; max-height: 70vh; overflow-y: auto;
+    font-family: system-ui, sans-serif; line-height: 1.5; overflow-wrap: anywhere;
+  }
+  #detail-output h2 { font-size: 1.15rem; margin: 1.2rem 0 0.4rem; }
+  #detail-output h3 { font-size: 1rem; margin: 0.9rem 0 0.3rem; }
+  #detail-output li { margin-bottom: 0.5rem; }
+  #detail-output .text { white-space: pre-wrap; }
+  #detail-output pre {
+    background: #f4f4f4; padding: 0.75rem; overflow-x: auto; overflow-wrap: normal;
   }
 
   details#log-details { margin-top: 1rem; }
@@ -367,7 +384,7 @@ PAGE = """
         <label><input type="checkbox" id="follow-checkbox" checked> follow run</label>
       </span>
     </div>
-    <pre id="detail-output" tabindex="0"></pre>
+    <div id="detail-output" tabindex="0"></div>
   </div>
 </div>
 
@@ -490,11 +507,6 @@ function renderList() {
   }
 }
 
-function prettyOutput(text) {
-  if (text == null) return '';
-  try { return JSON.stringify(JSON.parse(text), null, 2); } catch (e) { return text; }
-}
-
 function selectStage(name, manual) {
   selected = name;
   if (manual) {
@@ -515,7 +527,9 @@ function renderDetail() {
   if (lastRenderedKey === selected && lastRenderedOutput === raw) return;
   lastRenderedKey = selected;
   lastRenderedOutput = raw;
-  document.getElementById('detail-output').textContent = hasOutput ? prettyOutput(raw) : raw;
+  const panel = document.getElementById('detail-output');
+  // stage.html is built and escaped by the server (team_agents/markdown.py).
+  if (hasOutput) panel.innerHTML = stage.html; else panel.textContent = raw;
 }
 
 function autoFollow() {
@@ -541,7 +555,7 @@ function appendLog(newLines) {
 }
 
 document.getElementById('copy-btn').onclick = () => {
-  navigator.clipboard.writeText(document.getElementById('detail-output').textContent);
+  navigator.clipboard.writeText(document.getElementById('detail-output').innerText);
 };
 document.getElementById('follow-checkbox').onchange = (e) => {
   following = e.target.checked;

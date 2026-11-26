@@ -73,12 +73,14 @@ def parse_files(raw):
     return data
 
 
-def implement(_failure, goal, plan, design, *, decide):
+def implement(_failure, goal, plan, design, *reports, decide):
     implementer = (ROLES_DIR / "implementer.md").read_text(encoding="utf-8")
     implementation_request = json.dumps({
         "goal": goal,
         "approved_plan": plan,
         "approved_design": design,
+        # Advice from specialists; it never widens the approved scope.
+        **({"specialist_advice": reports} if reports else {}),
     })
     raw = decide(
         implementer,

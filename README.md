@@ -71,11 +71,15 @@ after the fact or from a session that isn't attached to that terminal —
 
 ### Writing outputs to disk
 
+The page shows each stage as a readable document (headings and lists), with
+proposed files as code blocks.
+
 The start form has an optional "Write outputs to" field. Leave it blank and
 nothing is written — the run stays purely in-memory, same as the CLI. Set it
 (e.g. `./runs`) and each run gets its own timestamped subdirectory containing,
 for every stage that finishes: a `.md` file (a generic, readable rendering of
-that stage's JSON output — headings per field, bullet lists for arrays) and,
+that stage's JSON output — headings per field, bullet lists for arrays, code
+blocks for proposed files) and,
 for structured stages, the raw `.json` alongside it. **This is the one place
 in the lab that writes the Implementer's proposal to disk as real files**,
 under `<run>/implementation/`: every proposed path is validated twice (once
@@ -136,10 +140,38 @@ Hard limits that stay in code:
 
 Every decision and its reason is logged with an `[operations]` prefix.
 
+### The Project Manager builds the team
+
+In the web UI, each run starts with the Project Manager. It sees every
+specialist profile and proposes the ones the goal needs, each with a task. You
+approve that team (autonomous runs approve it automatically).
+
+- **Discovery** specialists run first; their reports reach the Product Lead.
+- **Assurance** specialists run after QA; their reports reach the Implementer.
+- **Readiness** specialists run after the Reviewer.
+
+The core release (Product Lead, Architect, QA, Implementer, Reviewer) and its
+approvals are the same in every run. Specialists advise: their reports don't
+change approved scope or block a release. The command-line release
+(`plan_release.py`) runs the core team only.
+
+To add an agent, create a snake_case Markdown file in `team_agents/roles/`
+with a heading and instructions; nothing needs registering. `## Goal` is what
+the Project Manager reads, and `## Crew Phase` (`discovery`, `assurance`, or
+`readiness`) limits where it can be placed. To run one on its own:
+
+```bash
+.venv/bin/python -m team_agents --list
+```
+
+```bash
+.venv/bin/python -m team_agents --artifact README.md devex_lead "Find onboarding friction."
+```
+
 ### Every agent's workspace and memory
 
-In the web UI, every agent (Product Lead, Architect, QA, Implementer,
-Reviewer, and Operations) has its own persistent workspace under `.agents/`
+In the web UI, every agent (the core team, the Project Manager, each chosen
+specialist, and Operations) has its own persistent workspace under `.agents/`
 (git-ignored; `LAB_AGENTS_HOME` to move it), for example
 `.agents/architect/`. Inside it, the agent can list, read, and write files,
 and it keeps its own memory of what it tried and what worked. It decides the
