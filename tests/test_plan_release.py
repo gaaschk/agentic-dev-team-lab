@@ -243,10 +243,6 @@ class ReleaseTests(unittest.TestCase):
                 self.assertNotIn("private sentinel", diagnostic)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class GatewayErrorTests(unittest.TestCase):
     def test_cloudflare_gateway_timeouts_are_retryable_timeouts(self):
         """Regression: a live run died on HTTP 524 because only 5xx up to 504
@@ -267,3 +263,7 @@ class GatewayErrorTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as caught:
                 plan_release.ask_role("Role", "Goal", stage="Implementer")
             self.assertNotIsInstance(caught.exception, RetryableAgentError)
+
+
+if __name__ == "__main__":
+    unittest.main()
