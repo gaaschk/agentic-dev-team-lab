@@ -106,9 +106,25 @@ never repeats other work.
 - In an autonomous run, it also decides the stage-level retry gate (for
   example, malformed output): retry, retry on another route, or stop the run.
 
-The limits are fixed in code. The agent can't run anything or touch files.
-It gets at most 4 attempts per call, and only routes the router lists are
-accepted. Waits and timeouts are clamped to a range. Its own model call has a
+Before deciding, the agent can investigate with tools, up to 8 steps per
+decision. It has a persistent workspace, `.operations/` by default
+(`LAB_OPERATIONS_HOME` to change it, git-ignored), where it can list, read,
+and write files. It keeps its own memory of what it tried and what worked
+there, and it decides the format and structure itself. After a recovery
+works, or after it gives up, it's asked to record the outcome, so later runs
+can start from what worked before.
+
+**Shell commands are off by default.** Set `LAB_OPERATIONS_SHELL=1` to let
+the agent run shell commands (in its workspace, 60s limit each, every
+command and its output logged). Leave it off unless you want that: the agent
+reads error text and logs that partly come from other models, so a crafted
+message could try to steer it into running a harmful command on your
+machine. Its prompt tells it to treat that text as data, but a prompt is not
+a sandbox. File tools are always limited to the workspace.
+
+The other limits are fixed in code. The agent gets at most 4 attempts per
+call, and only routes the router lists are accepted. Its own model calls
+follow the same route switches, so it stops using a route it found hung. Waits and timeouts are clamped to a range. Its own model call has a
 30s timeout; if that call fails, a fixed backoff-and-retry rule takes over,
 so a router outage can't stall the run. Every decision and its reason is
 logged with an `[operations]` prefix.

@@ -1,4 +1,6 @@
 import json
+import tempfile
+from pathlib import Path
 from unittest import TestCase
 from unittest.mock import Mock
 
@@ -6,14 +8,23 @@ from team_agents.agent_retry import RetryableAgentError, TransientTimeout
 from team_agents.operations import MAX_ATTEMPTS, Operations
 
 
+def step(tool, path="", content="", command=""):
+    return json.dumps({"tool": tool, "path": path, "content": content, "command": command,
+                       "action": "keep", "route": "", "wait_seconds": 0, "timeout_seconds": 0,
+                       "reason": ""})
+
+
 def decision(action, route="", wait=0, timeout=60, reason="because"):
-    return json.dumps({"action": action, "route": route, "wait_seconds": wait,
+    return json.dumps({"tool": "decide", "path": "", "content": "", "command": "",
+                       "action": action, "route": route, "wait_seconds": wait,
                        "timeout_seconds": timeout, "reason": reason})
 
 
-def make(decide, advisor=None, routes=("smart-auto", "smart-anthropic")):
+def make(decide, advisor=None, routes=("smart-auto", "smart-anthropic"), **kwargs):
     log = []
-    ops = Operations(decide, advisor=advisor, routes=routes, emit=log.append, sleep=lambda s: None)
+    workspace = tempfile.mkdtemp()
+    ops = Operations(decide, advisor=advisor, routes=routes, emit=log.append, sleep=lambda s: None,
+                     workspace=workspace, shell=kwargs.pop("shell", False), **kwargs)
     return ops, log
 
 
@@ -27,7 +38,7 @@ class OperationsTests(TestCase):
         self.assertEqual([c.kwargs["model"] for c in decide.call_args_list],
                          ["smart-auto", "smart-anthropic", "smart-anthropic"])
         self.assertEqual(decide.call_args_list[1].kwargs["timeout"], 45)
-        situation = json.loads(advisor.call_args.args[1])
+        situation = json.loads(advisor.call_args_list[0].args[1])
         self.assertEqual(situation["stage"], "Architect tool choice")
         self.assertIn("timed out", situation["error"])
         self.assertEqual(situation["available_routes"], ["smart-auto", "smart-anthropic"])
@@ -73,7 +84,8 @@ class OperationsTests(TestCase):
         decide = Mock(return_value="ok")
         advisor = Mock(return_value=decision("switch_route", "smart-anthropic"))
         ops = Operations(decide, advisor=advisor, routes=["smart-auto", "smart-anthropic"],
-                         emit=lambda t: None, sleep=lambda s: None, clock=lambda: next(times))
+                         emit=lambda t: None, sleep=lambda s: None, clock=lambda: next(times),
+                         workspace=tempfile.mkdtemp(), shell=False)
         ops("r", "t", model="smart-auto")
         ops("r", "t", model="smart-auto")
         self.assertEqual(decide.call_args_list[1].kwargs["model"], "smart-anthropic")
@@ -83,3 +95,53 @@ class OperationsTests(TestCase):
         self.assertEqual(ops.stage_failed(["QA did not return clean JSON."]), "s")
         ops, _ = make(Mock(), Mock(return_value=decision("retry")))
         self.assertEqual(ops.stage_failed(["x"]), "r")
+
+
+class OperationsToolTests(TestCase):
+    def test_agent_writes_memory_then_decides(self):
+        decide = Mock(side_effect=[TransientTimeout("slow."), "ok"])
+        advisor = Mock(side_effect=[
+            step("read_file", path="memory.json"),
+            decision("retry"),
+            step("write_file", path="memory.json", content='{"smart-auto": "retry worked"}'),
+            decision("keep"),
+        ])
+        ops, _ = make(decide, advisor)
+        ops("r", "t", model="smart-auto", stage="QA")
+        self.assertIn("retry worked", (ops.workspace / "memory.json").read_text())
+        observations = json.loads(advisor.call_args_list[1].args[1])["observations"]
+        self.assertTrue(observations[0]["result"].startswith("error"))
+
+    def test_memory_survives_across_runs_in_the_same_workspace(self):
+        workspace = tempfile.mkdtemp()
+        Operations(Mock(), workspace=workspace).use_tool(
+            {"tool": "write_file", "path": "notes/routes.md", "content": "anthropic is fast"})
+        ops = Operations(Mock(), workspace=workspace)
+        self.assertEqual(ops.use_tool({"tool": "read_file", "path": "notes/routes.md"}),
+                         "anthropic is fast")
+
+    def test_file_tools_cannot_leave_the_workspace(self):
+        ops, _ = make(Mock())
+        for path in ("../escape.txt", "/etc/passwd"):
+            result = ops.use_tool({"tool": "write_file", "path": path, "content": "x"})
+            self.assertTrue(result.startswith("error"))
+        self.assertFalse((Path(ops.workspace).parent / "escape.txt").exists())
+
+    def test_shell_is_off_unless_enabled(self):
+        ops, _ = make(Mock())
+        self.assertIn("disabled", ops.use_tool({"tool": "run_command", "command": "echo hi"}))
+        ops, _ = make(Mock(), shell=True)
+        self.assertEqual(ops.use_tool({"tool": "run_command", "command": "echo hi"}), "exit 0\nhi\n")
+
+    def test_tool_loop_is_capped(self):
+        advisor = Mock(return_value=step("list_files"))
+        ops, log = make(Mock(), advisor)
+        self.assertIsNone(ops.think({"situation": "call_failed"}))
+        self.assertTrue(any("No decision after" in line for line in log))
+
+    def test_its_own_calls_avoid_a_route_it_switched_away_from(self):
+        decide = Mock(side_effect=[TransientTimeout("slow."), "ok"])
+        advisor = Mock(return_value=decision("switch_route", "smart-anthropic"))
+        ops, _ = make(decide, advisor)
+        ops("r", "t", model="smart-auto")
+        self.assertEqual(advisor.call_args_list[-1].kwargs["model"], "smart-anthropic")
