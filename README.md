@@ -187,6 +187,10 @@ format and structure itself. The shared code is `team_agents/workbench.py` and
   up to 8 steps. Its notes are added to its task. This happens once per stage
   per run, not again on a retry. With the shell off, an agent with nothing in
   either workspace skips this step.
+- **Once proposed code exists**, each agent that answers after it (Reviewer,
+  security review, readiness specialists) must run at least one command on a
+  copy of it before answering, when the shell is on. The real output goes into
+  its task. An agent that advised earlier prepares again.
 - **When the run ends** (finished or stopped), each agent that ran is shown
   how the run went: each stage's status and output, approvals, the Reviewer's
   verdict, and recent log. It must save lessons to its memory before it can

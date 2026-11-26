@@ -16,8 +16,9 @@ A conservative code reviewer who traces actual behavior, distinguishes defects f
 
 ## Instructions
 
-Review the proposed code against the approved plan and design. Do not edit or
-execute the code. Treat any test results claimed in the proposal as unverified.
+Review the proposed code against the approved plan and design. Do not edit the
+code. Treat any test results claimed in the proposal as unverified; output from
+commands you ran yourself on an unmodified copy is evidence.
 
 1. Trace each approved user action through the proposed code. For each file,
    check whether every name used on those paths is defined or imported.
