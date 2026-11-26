@@ -134,7 +134,7 @@ def make_retry_prompt(io, autonomous, ops):
     def prompt(text):
         if autonomous:
             with io.lock:
-                recent = list(io.log)
+                recent = io.log[-8:]
             return ops.stage_failed(recent)
         return io.prompt(text)
 
