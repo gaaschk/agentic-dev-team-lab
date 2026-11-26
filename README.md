@@ -129,8 +129,10 @@ format and structure itself. The shared code is `team_agents/workbench.py`.
   answers without it rather than blocking the run.
 
 **Shell commands are off by default.** Set `LAB_AGENT_SHELL=1` to let every
-agent run shell commands (in its own workspace, 60s limit each, every command
-and its output logged). Leave it off unless you want that: agents read text
+agent run shell commands (60s limit each, every command and its output
+logged). Commands **are not sandboxed**: they start in the agent's workspace
+folder, but run as your user with full access to your files and network, the
+same as anything you type in a terminal. Leave it off unless you want that: agents read text
 that partly comes from other models (plans, designs, error messages), so a
 crafted message could try to steer one into running a harmful command on
 your machine. Their prompts tell them to treat that text as data, but a
