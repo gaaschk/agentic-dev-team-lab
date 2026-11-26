@@ -134,6 +134,17 @@ class StartRunOutputErrorTests(TestCase):
             webapp.write_stage_document(run_dir, "Architect", "Stopped. Implementer not called.")
             self.assertIn("Stopped", (run_dir / "architect.md").read_text())
 
+    def test_autonomous_retry_gate_is_decided_by_operations_not_a_human(self):
+        webapp = self.webapp
+        io = webapp.WebIO()
+        io.emit("QA did not return clean JSON.")
+        ops = type("Ops", (), {"stage_failed": lambda self, log: ("s" if log else "r")})()
+        with patch.object(io, "prompt", side_effect=AssertionError("must not block")):
+            self.assertEqual(webapp.make_retry_prompt(io, True, ops)("QA failed."), "s")
+        with patch.object(io, "prompt", return_value="r") as human:
+            self.assertEqual(webapp.make_retry_prompt(io, False, ops)("QA failed."), "r")
+            human.assert_called_once()
+
     def test_output_dir_must_be_a_string(self):
         client = self.webapp.app.test_client()
         res = client.post("/start", json={"goal": "x", "output_dir": 123})
