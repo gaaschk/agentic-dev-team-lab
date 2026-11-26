@@ -91,7 +91,7 @@ this run, or `s` (or Enter) to stop. A failed retry ends the run. This does not
 override a real blocker or substitute for an approval.
 
 In the web UI, an **Operations agent** (`team_agents/operations.py`, prompt in
-`roles/operations.md`, model via `LAB_OPERATIONS_MODEL`) handles runtime
+`team_agents/roles/operations.md`, model via `LAB_OPERATIONS_MODEL`) handles runtime
 problems by reasoning about them, not by following a fixed rule. It works on
 single model calls, not whole stages. Each call is read-only, so repeating one
 never repeats other work.
@@ -106,23 +106,38 @@ never repeats other work.
 - In an autonomous run, it also decides the stage-level retry gate (for
   example, malformed output): retry, retry on another route, or stop the run.
 
-Before deciding, the agent can investigate with tools, up to 8 steps per
-decision. It has a persistent workspace, `.operations/` by default
-(`LAB_OPERATIONS_HOME` to change it, git-ignored), where it can list, read,
-and write files. It keeps its own memory of what it tried and what worked
-there, and it decides the format and structure itself. After a recovery
-works, or after it gives up, it's asked to record the outcome, so later runs
-can start from what worked before.
+Before deciding, the agent can investigate with its workbench tools (see
+below), and after a recovery works or it gives up, it's asked to record the
+outcome in its memory.
 
-**Shell commands are off by default.** Set `LAB_OPERATIONS_SHELL=1` to let
-the agent run shell commands (in its workspace, 60s limit each, every
-command and its output logged). Leave it off unless you want that: the agent
-reads error text and logs that partly come from other models, so a crafted
-message could try to steer it into running a harmful command on your
-machine. Its prompt tells it to treat that text as data, but a prompt is not
-a sandbox. File tools are always limited to the workspace.
+### Every agent's workspace and memory
 
-The other limits are fixed in code. The agent gets at most 4 attempts per
+In the web UI, every agent (Product Lead, Architect, QA, Implementer,
+Reviewer, and Operations) has its own persistent workspace under `.agents/`
+(git-ignored; `LAB_AGENTS_HOME` to move it), for example
+`.agents/architect/`. Inside it, the agent can list, read, and write files,
+and it keeps its own memory of what it tried and what worked. It decides the
+format and structure itself. The shared code is `team_agents/workbench.py`.
+
+- **Before answering**, each agent checks its memory and can use its tools,
+  up to 8 steps. Its notes are added to its task. This happens once per stage
+  per run, not again on a retry.
+- **When the run ends** (finished or stopped), each agent that ran is shown
+  how the run went: each stage's status and output, approvals, the Reviewer's
+  verdict, and recent log. It's asked to record lessons in its memory.
+- If the memory step fails (for example, the router is down), the agent
+  answers without it rather than blocking the run.
+
+**Shell commands are off by default.** Set `LAB_AGENT_SHELL=1` to let every
+agent run shell commands (in its own workspace, 60s limit each, every command
+and its output logged). Leave it off unless you want that: agents read text
+that partly comes from other models (plans, designs, error messages), so a
+crafted message could try to steer one into running a harmful command on
+your machine. Their prompts tell them to treat that text as data, but a
+prompt is not a sandbox. File tools are always limited to each agent's own
+workspace.
+
+The operations agent's other limits are fixed in code. The agent gets at most 4 attempts per
 call, and only routes the router lists are accepted. Its own model calls
 follow the same route switches, so it stops using a route it found hung. Waits and timeouts are clamped to a range. Its own model call has a
 30s timeout; if that call fails, a fixed backoff-and-retry rule takes over,

@@ -22,6 +22,7 @@ from team_agents.agent_retry import AgentRetry
 from team_agents.implementer_agent import is_safe_relative_path
 from team_agents.markdown import render_document
 from team_agents.operations import Operations, list_routes
+from team_agents.workbench import Team
 from team_agents.role_agents import run as native_artifacts
 from team_agents.reviewer_agent import ask_agent_reviewer
 from workflows.release import release_workflow
@@ -239,12 +240,14 @@ def start_run(goal, *, autonomous=False, output_dir=None):
         _thread_io[threading.get_ident()] = io
         if run_dir:
             io.emit(f"[operations] Writing this run's output to {run_dir}")
+        team = None
         try:
             ops = Operations(ask_role, emit=io.emit, routes=list_routes(),
                              advisor=lambda role, task, **kw: ask_role(role, task, timeout=30, **kw))
+            team = Team(ops, emit=io.emit)
             workflow = release_workflow(
-                decide=ops,
-                review=lambda *a: ask_agent_reviewer(*a, decide=ops),
+                decide=team,
+                review=lambda *a: ask_agent_reviewer(*a, decide=team),
                 artifact_runner=native_artifacts,
             )
             io.seed_stages([node.name for node in workflow if isinstance(node, Step)])
@@ -255,6 +258,15 @@ def start_run(goal, *, autonomous=False, output_dir=None):
         except SystemExit as exc:
             io.emit(str(exc))
         finally:
+            if team and team.notes:
+                io.emit("[team] Agents are recording lessons from this run…")
+                with io.lock:
+                    outcome = {
+                        "stages": [{"name": s["name"], "status": s["status"],
+                                    "output": (s["output"] or "")[:1500]} for s in io.stages],
+                        "recent_log": io.log[-15:],
+                    }
+                team.reflect(outcome)
             del _thread_io[threading.get_ident()]
             io.done = True
 

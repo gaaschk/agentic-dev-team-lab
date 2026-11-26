@@ -2,57 +2,32 @@
 and keeps its own persistent memory of what worked.
 
 Recovery works at the single-call level: every model call is read-only, so
-repeating one never repeats other work. The agent has a persistent workspace
-(.operations/ by default) where it may read and write files in whatever
-format it chooses, and, only when LAB_OPERATIONS_SHELL=1, run shell commands."""
+repeating one never repeats other work. Its workspace and tools come from
+the shared Workbench (team_agents/workbench.py)."""
 
 import json
 import os
-import subprocess
 import sys
 import time
-from pathlib import Path
 from urllib.request import Request, urlopen
 
 from . import ROLES_DIR
 from .agent_retry import RetryableAgentError
-from .implementer_agent import is_safe_relative_path
 from .model_config import resolve_model
+from .workbench import Workbench, home_for, step_format
 
 MAX_ATTEMPTS = 4
-MAX_TOOL_STEPS = 8
 SLOW_SECONDS = 60
 HISTORY_LIMIT = 20
 DEFAULT_TIMEOUT = 120
-COMMAND_TIMEOUT = 60
-OUTPUT_LIMIT = 6000
-DEFAULT_WORKSPACE = Path(__file__).resolve().parents[1] / ".operations"
 
-TOOL_FORMAT = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "operations_step",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "tool": {"type": "string",
-                         "enum": ["list_files", "read_file", "write_file", "run_command", "decide"]},
-                "path": {"type": "string"},
-                "content": {"type": "string"},
-                "command": {"type": "string"},
-                "action": {"type": "string", "enum": ["retry", "switch_route", "give_up", "keep"]},
-                "route": {"type": "string"},
-                "wait_seconds": {"type": "integer"},
-                "timeout_seconds": {"type": "integer"},
-                "reason": {"type": "string"},
-            },
-            "required": ["tool", "path", "content", "command", "action", "route",
-                         "wait_seconds", "timeout_seconds", "reason"],
-            "additionalProperties": False,
-        },
-    },
-}
+TOOL_FORMAT = step_format("operations_step", {
+    "action": {"type": "string", "enum": ["retry", "switch_route", "give_up", "keep"]},
+    "route": {"type": "string"},
+    "wait_seconds": {"type": "integer"},
+    "timeout_seconds": {"type": "integer"},
+    "reason": {"type": "string"},
+})
 
 
 def list_routes():
@@ -68,10 +43,6 @@ def list_routes():
         return []
 
 
-def _clip(text):
-    return text if len(text) <= OUTPUT_LIMIT else text[:OUTPUT_LIMIT] + "\n…(truncated)"
-
-
 class Operations:
     def __init__(self, decide, *, advisor=None, routes=(), emit=None, sleep=time.sleep,
                  clock=time.monotonic, workspace=None, shell=None):
@@ -81,80 +52,37 @@ class Operations:
         self.emit = emit or (lambda text: print(text, file=sys.stderr))
         self.sleep = sleep
         self.clock = clock
-        self.workspace = Path(workspace or os.getenv("LAB_OPERATIONS_HOME") or DEFAULT_WORKSPACE)
-        self.shell = os.getenv("LAB_OPERATIONS_SHELL") == "1" if shell is None else shell
+        self.bench = Workbench(workspace or home_for("operations"), shell=shell)
+        self.workspace = self.bench.workspace
         self.history = []
         self.reroute = {}  # failing route -> replacement, for the rest of the run
 
-    # --- tools -------------------------------------------------------------
-
-    def _workspace_path(self, path):
-        if not is_safe_relative_path(path):
-            raise ValueError(f"path must be relative and inside the workspace: {path!r}")
-        base = self.workspace.resolve()
-        target = (base / path).resolve()
-        if base not in target.parents:
-            raise ValueError(f"path escapes the workspace: {path!r}")
-        return target
-
     def use_tool(self, step):
-        tool = step["tool"]
-        try:
-            if tool == "list_files":
-                files = sorted(str(p.relative_to(self.workspace)) for p in self.workspace.rglob("*")
-                               if p.is_file())
-                return "\n".join(files[:200]) or "(workspace is empty)"
-            if tool == "read_file":
-                return _clip(self._workspace_path(step["path"]).read_text(encoding="utf-8"))
-            if tool == "write_file":
-                target = self._workspace_path(step["path"])
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(step["content"], encoding="utf-8")
-                return f"wrote {len(step['content'])} characters to {step['path']}"
-            if tool == "run_command":
-                if not self.shell:
-                    return "shell commands are disabled (the operator can set LAB_OPERATIONS_SHELL=1)"
-                done = subprocess.run(step["command"], shell=True, cwd=self.workspace,
-                                      capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
-                return _clip(f"exit {done.returncode}\n{done.stdout}{done.stderr}")
-        except subprocess.TimeoutExpired:
-            return f"command timed out after {COMMAND_TIMEOUT}s"
-        except (OSError, ValueError, UnicodeDecodeError) as exc:
-            return f"error: {exc}"
-        return f"unknown tool {tool!r}"
-
-    # --- reasoning ---------------------------------------------------------
+        return self.bench.use_tool(step)
 
     def think(self, situation):
         """Let the operations model investigate with its tools, then decide.
         None if it can't produce a usable decision."""
         if self.advisor is None:
             return None
-        self.workspace.mkdir(parents=True, exist_ok=True)
         role = (ROLES_DIR / "operations.md").read_text(encoding="utf-8")
         context = {**situation, "history": self.history[-HISTORY_LIMIT:],
-                   "available_routes": self.routes, "shell_enabled": self.shell,
-                   "workspace": str(self.workspace)}
-        observations = []
-        for _ in range(MAX_TOOL_STEPS):
-            try:
-                raw = self.advisor(role, json.dumps({**context, "observations": observations}),
-                                   response_format=TOOL_FORMAT,
-                                   model=self.route_for(resolve_model("LAB_OPERATIONS_MODEL")),
-                                   stage="Operations")
-                step = json.loads(raw)
-                tool = step["tool"]
-            except (SystemExit, Exception) as exc:
-                self.emit(f"[operations] Couldn't consult the operations model ({exc}); using the default policy.")
-                return None
-            if tool == "decide":
-                return self._decision(step)
-            label = step["command"] if tool == "run_command" else step["path"]
-            result = self.use_tool(step)
-            self.emit(f"[operations] {tool}({label}) -> {result.splitlines()[0] if result else ''}")
-            observations.append({"tool": tool, "input": label, "result": result})
-        self.emit(f"[operations] No decision after {MAX_TOOL_STEPS} tool steps; using the default policy.")
-        return None
+                   "available_routes": self.routes}
+
+        def ask(system, task, **kwargs):
+            return self.advisor(system, task, stage="Operations",
+                                model=self.route_for(resolve_model("LAB_OPERATIONS_MODEL")), **kwargs)
+
+        try:
+            step, _ = self.bench.loop(ask, role, context, fmt=TOOL_FORMAT, emit=self.emit,
+                                      label="operations")
+        except (SystemExit, Exception) as exc:
+            self.emit(f"[operations] Couldn't consult the operations model ({exc}); using the default policy.")
+            return None
+        if step is None:
+            self.emit("[operations] Using the default policy.")
+            return None
+        return self._decision(step)
 
     def _decision(self, step):
         action = step["action"]
