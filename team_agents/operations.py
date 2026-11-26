@@ -20,6 +20,7 @@ from .workbench import Workbench, home_for, step_format
 # many retries a failure is worth within them; they aren't a retry count.
 RECOVERY_SECONDS = 1800  # failed-call time plus retry waits; LAB_OPERATIONS_RECOVERY_SECONDS
 MAX_FAILURES = 100  # failed model calls plus failed stages (e.g. invalid output)
+MEMORY_SHARE = 0.15  # most of either limit that optional memory steps may use
 FALLBACK_ATTEMPTS = 3  # only when the operations model can't be consulted
 SLOW_SECONDS = 60
 HISTORY_LIMIT = 20
@@ -62,6 +63,7 @@ class Operations:
         self.stage_retries = 0
         self.stage_failures = 0
         self.recovery_seconds = 0.0
+        self.memory_seconds = 0.0  # the part of recovery_seconds spent on memory steps
         self.recovery_limit = float(os.getenv("LAB_OPERATIONS_RECOVERY_SECONDS") or RECOVERY_SECONDS)
         self.history = []
         self.reroute = {}  # failing route -> replacement, for the rest of the run
@@ -82,7 +84,11 @@ class Operations:
                                   "max_failures": MAX_FAILURES,
                                   "stage_retries": self.stage_retries,
                                   "recovery_seconds_used": round(self.recovery_seconds, 1),
-                                  "recovery_seconds_limit": self.recovery_limit},
+                                  "recovery_seconds_limit": self.recovery_limit,
+                                  "memory_failed_calls": self.memory_failures(),
+                                  "memory_max_failures": int(MAX_FAILURES * MEMORY_SHARE),
+                                  "memory_recovery_seconds_used": round(self.memory_seconds, 1),
+                                  "memory_recovery_seconds_limit": self.recovery_limit * MEMORY_SHARE},
                    "available_routes": self.routes}
 
         def ask(system, task, **kwargs):
@@ -129,7 +135,9 @@ class Operations:
 
     def __call__(self, role, task, *, model=None, stage="Model", **kwargs):
         primary = model or resolve_model()
-        timeout = None
+        timeout = kwargs.pop("timeout", None)
+        optional = stage.endswith(" memory")
+        longest = timeout  # an optional step may shorten its timeout, never extend it
         attempt = 0
         call_started = self.clock()
         while True:
@@ -147,13 +155,14 @@ class Operations:
                                      "outcome": str(failure)})
                 if not self.autonomous:
                     raise  # someone is watching: the human retry gate decides
-                self.recovery_seconds += seconds
-                if self.exhausted():
-                    self.emit(f"[operations] {stage}: run-wide recovery limit reached "
-                              f"({self.limit_text()}); not retrying.")
+                self.charge(seconds, optional)
+                if self.exhausted(optional):
+                    self.emit(f"[operations] {stage}: {'memory' if optional else 'run-wide'} "
+                              f"recovery limit reached ({self.limit_text(optional)}); not retrying.")
                     raise
                 decision = self.think({
                     "situation": "call_failed", "stage": stage, "route": route,
+                    "optional_step": optional,
                     "error": str(failure), "seconds": seconds,
                     "timeout_used": timeout or DEFAULT_TIMEOUT,
                     "attempt": attempt,
@@ -172,13 +181,18 @@ class Operations:
                 if decision["action"] == "switch_route":
                     self.switch(route, decision["route"], decision["reason"])
                 timeout = decision["timeout"]
+                if optional:
+                    timeout = min(timeout, longest or DEFAULT_TIMEOUT)
                 self.emit(f"[operations] {stage} failed on {route}: {decision['reason']} "
                           f"Retrying on {self.route_for(primary)} in {decision['wait']}s "
                           f"(timeout {timeout}s, attempt {attempt + 1}).")
-                self.recovery_seconds += decision["wait"]
-                if self.exhausted():
+                self.charge(decision["wait"], optional)
+                if self.exhausted(optional):
                     self.emit(f"[operations] {stage}: the {decision['wait']}s wait would reach the "
-                              f"run-wide recovery limit ({self.limit_text()}); not retrying.")
+                              f"{'memory' if optional else 'run-wide'} recovery limit "
+                              f"({self.limit_text(optional)}); not retrying.")
+                    if optional:  # the run goes on: don't bill it for a wait never taken
+                        self.charge(-decision["wait"], optional)
                     raise
                 self.sleep(decision["wait"])
                 continue
@@ -199,20 +213,39 @@ class Operations:
         failed_calls = sum(1 for h in self.history if h["outcome"] != "ok")
         return failed_calls + self.stage_failures
 
-    def exhausted(self):
+    def memory_failures(self):
+        return sum(1 for h in self.history
+                   if h["outcome"] != "ok" and h["stage"].endswith(" memory"))
+
+    def charge(self, seconds, optional):
+        self.recovery_seconds += seconds
+        if optional:
+            self.memory_seconds += seconds
+
+    def exhausted(self, optional=False):
+        """Memory steps also stop at their own smaller share, so they can't
+        use up the recovery that the delivery stages need."""
+        if optional and (self.memory_seconds >= self.recovery_limit * MEMORY_SHARE
+                         or self.memory_failures() >= int(MAX_FAILURES * MEMORY_SHARE)):
+            return True
         return self.recovery_seconds >= self.recovery_limit or self.failures() >= MAX_FAILURES
 
-    def limit_text(self):
+    def limit_text(self, optional=False):
+        if optional:
+            return (f"memory has used {self.memory_seconds:.0f}s of "
+                    f"{self.recovery_limit * MEMORY_SHARE:.0f}s and {self.memory_failures()} of "
+                    f"{int(MAX_FAILURES * MEMORY_SHARE)} failures; run total "
+                    f"{self.limit_text()}")
         return (f"{self.recovery_seconds:.0f}s of {self.recovery_limit:.0f}s recovery time, "
                 f"{self.failures()} of {MAX_FAILURES} failures")
 
     def stage_failed(self, recent_log):
-        # A stage can fail with every model call succeeding (invalid output),
-        # so stage failures count toward the run-wide limit too.
-        self.stage_failures += 1
         """Decide the stage-level retry gate in an autonomous run: 'r' or 's'.
         The agent decides how many stage retries are worth it; without a usable
         decision, or at the run-wide recovery limit, the run stops cleanly."""
+        # A stage can fail with every model call succeeding (invalid output),
+        # so stage failures count toward the run-wide limit too.
+        self.stage_failures += 1
         if self.exhausted():
             self.emit(f"[operations] Stopping the run: run-wide recovery limit reached ({self.limit_text()}).")
             self.think({"situation": "gave_up", "recent_log": recent_log[-8:],

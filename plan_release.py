@@ -66,7 +66,13 @@ def ask_role(role, goal, *, response_format=None, model=None, stage="Model", tim
             print(diagnostic("response received"), file=sys.stderr)
             return answer
     except HTTPError as exc:
-        error = RetryableAgentError if exc.code in {408, 429, 500, 502, 503, 504} else SystemExit
+        # 520-524 are Cloudflare gateway errors in front of the router; 504/522/524 are timeouts.
+        if exc.code in {504, 522, 524}:
+            error = TransientTimeout
+        elif exc.code in {408, 429, 500, 502, 503, 520, 521, 523}:
+            error = RetryableAgentError
+        else:
+            error = SystemExit
         raise error(diagnostic(f"router returned HTTP {exc.code}")) from None
     except TimeoutError:
         raise TransientTimeout(diagnostic("request timed out")) from None

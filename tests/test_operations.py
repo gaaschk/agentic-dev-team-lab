@@ -102,6 +102,42 @@ class OperationsTests(TestCase):
             ops("r", "t", model="m")
         self.assertEqual(decide.call_count, 3)  # a 3rd 40s wait would total 120s, so no 4th request
 
+    def test_memory_failures_leave_recovery_for_the_delivery_stages(self):
+        """An advisor that always says retry must not let an optional memory
+        step spend the recovery that a required stage needs."""
+        now = [0.0]
+
+        def decide(role, task, *, stage, **kwargs):
+            now[0] += 30
+            if stage.endswith(" memory") or decide.fail_next:
+                decide.fail_next = False
+                raise TransientTimeout("slow.")
+            return "ok"
+
+        advisor = Mock(return_value=decision("retry", timeout=600))
+        for limit, memory_calls in (("1800", 9), ("100000", MAX_FAILURES * 15 // 100)):
+            decide.fail_next = False
+            spy = Mock(side_effect=decide)
+            with patch.dict(os.environ, {"LAB_OPERATIONS_RECOVERY_SECONDS": limit}):
+                ops, log = make(spy, advisor, clock=lambda: now[0])
+            with self.assertRaises(TransientTimeout):
+                ops("r", "t", model="m", stage="QA memory", timeout=90)
+            self.assertEqual(spy.call_count, memory_calls)  # 270s at 30s each, or 15 failures
+            self.assertEqual({c.kwargs["timeout"] for c in spy.call_args_list}, {90})
+            self.assertIn("memory recovery limit reached", log[-1])
+            decide.fail_next = True
+            self.assertEqual(ops("r", "t", model="m", stage="Implementer"), "ok")
+
+    def test_a_skipped_memory_wait_is_not_billed_to_the_run(self):
+        slept = []
+        ops, _ = make(Mock(side_effect=TransientTimeout("slow.")),
+                      Mock(return_value=decision("retry", wait=120)), clock=lambda: 0.0)
+        ops.sleep = slept.append
+        with self.assertRaises(TransientTimeout):
+            ops("r", "t", model="m", stage="QA memory")
+        self.assertEqual(slept, [120, 120])  # a third wait would pass memory's 270s
+        self.assertEqual((ops.recovery_seconds, ops.memory_seconds), (240, 240))
+
     def test_without_its_model_it_falls_back_to_a_short_fixed_policy(self):
         decide = Mock(side_effect=TransientTimeout("slow."))
         ops, _ = make(decide, Mock(side_effect=SystemExit("ops model down.")))
@@ -217,3 +253,12 @@ class OperationsToolTests(TestCase):
         self.assertEqual(decide.call_count, 1)
         self.assertEqual(slept, [])
         self.assertTrue(any("would reach the run-wide recovery limit" in line for line in log))
+
+    def test_memory_steps_are_flagged_optional_and_keep_their_timeout(self):
+        decide = Mock(side_effect=[TransientTimeout("slow."), "ok"])
+        advisor = Mock(return_value=decision("switch_route", "smart-anthropic", timeout=45))
+        ops, _ = make(decide, advisor)
+        ops("r", "t", model="smart-auto", stage="Architect memory", timeout=90)
+        self.assertEqual(decide.call_args_list[0].kwargs["timeout"], 90)
+        self.assertEqual(decide.call_args_list[1].kwargs["timeout"], 45)
+        self.assertTrue(json.loads(advisor.call_args_list[0].args[1])["optional_step"])

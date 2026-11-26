@@ -151,9 +151,13 @@ format and structure itself. The shared code is `team_agents/workbench.py`.
 - **When the run ends** (finished or stopped), each agent that ran is shown
   how the run went: each stage's status and output, approvals, the Reviewer's
   verdict, and recent log. It's asked to record lessons in its memory.
-- Memory steps get one attempt each, with a 90s timeout. If one fails (for
-  example, the router is down), the agent answers without it, and memory is
-  off for the rest of that run, so an outage costs at most one wait.
+- Memory steps go through the operations agent like any other call, marked
+  as optional steps (90s timeout, which a retry can shorten but not extend),
+  so a hung route gets rerouted rather than losing memory. All memory steps in
+  a run together get 15% of each hard limit above (270s of recovery time or 15
+  failed calls by default), leaving the rest for the stages. If recovery gives
+  up on one, the agent answers without it and memory is off for the rest of
+  that run.
 
 **Shell commands are off by default.** Set `LAB_AGENT_SHELL=1` to let every
 agent run shell commands (60s limit each, every command and its output

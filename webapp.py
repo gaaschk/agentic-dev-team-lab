@@ -22,7 +22,7 @@ from team_agents.agent_retry import AgentRetry
 from team_agents.implementer_agent import is_safe_relative_path
 from team_agents.markdown import render_document
 from team_agents.operations import Operations, list_routes
-from team_agents.workbench import Team
+from team_agents.workbench import CONTEXT_LIMIT, Team, clip
 from team_agents.role_agents import run as native_artifacts
 from team_agents.reviewer_agent import ask_agent_reviewer
 from workflows.release import release_workflow
@@ -149,8 +149,7 @@ def build_runtime(io, autonomous, *, ask, routes=(), sleep=time.sleep):
     decider, at both the call and the stage level, so budgets don't stack."""
     ops = Operations(ask, emit=io.emit, routes=routes, sleep=sleep, autonomous=autonomous,
                      advisor=lambda role, task, **kw: ask(role, task, timeout=30, **kw))
-    team = Team(ops, emit=io.emit, memory=lambda role, task, *, model=None, **kw: ask(
-        role, task, model=ops.route_for(model), timeout=90, **kw))
+    team = Team(ops, emit=io.emit)
     retry = AgentRetry(prompt=make_retry_prompt(io, autonomous, ops), emit=io.emit,
                        auto_retries=0 if autonomous else 1, ask_again=autonomous)
     return ops, team, retry
@@ -216,6 +215,16 @@ def write_implementation_files(run_dir, result, emit):
         emit(f"[operations] Wrote {target.relative_to(run_dir)}")
 
 
+def run_record(io):
+    """What agents are told about a finished run when recording lessons."""
+    with io.lock:
+        return {
+            "stages": [{"name": s["name"], "status": s["status"],
+                        "output": clip(s["output"] or "", CONTEXT_LIMIT)} for s in io.stages],
+            "recent_log": io.log[-15:],
+        }
+
+
 def start_run(goal, *, autonomous=False, output_dir=None):
     """Refuse to start a second run while one is still in progress, or if the
     operations agent's environment check finds something a run can't survive."""
@@ -272,13 +281,7 @@ def start_run(goal, *, autonomous=False, output_dir=None):
             try:
                 if team and team.notes and not team.memory_down:
                     io.emit("[team] Agents are recording lessons from this run…")
-                    with io.lock:
-                        outcome = {
-                            "stages": [{"name": s["name"], "status": s["status"],
-                                        "output": (s["output"] or "")[:1500]} for s in io.stages],
-                            "recent_log": io.log[-15:],
-                        }
-                    team.reflect(outcome)
+                    team.reflect(run_record(io))
             except Exception as exc:
                 io.emit(f"[team] Couldn't record lessons ({exc}).")
             finally:

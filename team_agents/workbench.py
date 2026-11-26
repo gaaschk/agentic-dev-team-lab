@@ -13,6 +13,7 @@ from .implementer_agent import is_safe_relative_path
 MAX_TOOL_STEPS = 8
 COMMAND_TIMEOUT = 60
 OUTPUT_LIMIT = 6000
+CONTEXT_LIMIT = 20000  # a stage output or task shown to an agent's memory step
 AGENTS_HOME = Path(__file__).resolve().parents[1] / ".agents"
 
 TOOLS = ["list_files", "read_file", "write_file", "run_command", "decide"]
@@ -66,8 +67,10 @@ def step_format(name, extra=None):
     }
 
 
-def _clip(text):
-    return text if len(text) <= OUTPUT_LIMIT else text[:OUTPUT_LIMIT] + "\n…(truncated)"
+def clip(text, limit=OUTPUT_LIMIT):
+    # Say so when cutting: an agent otherwise records the missing part as missing work.
+    return text if len(text) <= limit else (
+        text[:limit] + "\n…(truncated here for length; the original continues)")
 
 
 class Workbench:
@@ -85,30 +88,37 @@ class Workbench:
         return target
 
     def use_tool(self, step):
-        tool = step["tool"]
+        return self.run_tool(step)[1]
+
+    def run_tool(self, step):
+        """(succeeded, result text)."""
         try:
-            if tool == "list_files":
-                files = sorted(str(p.relative_to(self.workspace)) for p in self.workspace.rglob("*")
-                               if p.is_file())
-                return "\n".join(files[:200]) or "(workspace is empty)"
-            if tool == "read_file":
-                return _clip(self._path(step["path"]).read_text(encoding="utf-8"))
-            if tool == "write_file":
-                target = self._path(step["path"])
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(step["content"], encoding="utf-8")
-                return f"wrote {len(step['content'])} characters to {step['path']}"
-            if tool == "run_command":
-                if not self.shell:
-                    return "shell commands are disabled (the operator can set LAB_AGENT_SHELL=1)"
-                done = subprocess.run(step["command"], shell=True, cwd=self.workspace,
-                                      capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
-                return _clip(f"exit {done.returncode}\n{done.stdout}{done.stderr}")
+            return True, self._tool(step)
         except subprocess.TimeoutExpired:
-            return f"command timed out after {COMMAND_TIMEOUT}s"
+            return False, f"command timed out after {COMMAND_TIMEOUT}s"
         except (OSError, ValueError, UnicodeDecodeError) as exc:
-            return f"error: {exc}"
-        return f"unknown tool {tool!r}"
+            return False, f"error: {exc}"
+
+    def _tool(self, step):
+        tool = step["tool"]
+        if tool == "list_files":
+            files = sorted(str(p.relative_to(self.workspace)) for p in self.workspace.rglob("*")
+                           if p.is_file())
+            return "\n".join(files[:200]) or "(workspace is empty)"
+        if tool == "read_file":
+            return clip(self._path(step["path"]).read_text(encoding="utf-8"))
+        if tool == "write_file":
+            target = self._path(step["path"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(step["content"], encoding="utf-8")
+            return f"wrote {len(step['content'])} characters to {step['path']}"
+        if tool == "run_command":
+            if not self.shell:
+                return "shell commands are disabled (the operator can set LAB_AGENT_SHELL=1)"
+            done = subprocess.run(step["command"], shell=True, cwd=self.workspace,
+                                  capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
+            return clip(f"exit {done.returncode}\n{done.stdout}{done.stderr}")
+        raise ValueError(f"unknown tool {tool!r}")
 
     def loop(self, ask, role, context, *, fmt, emit, label):
         """Run tool steps until the model says "decide". Returns (final step or
@@ -122,26 +132,28 @@ class Workbench:
             if step["tool"] == "decide":
                 return step, observations
             arg = step["command"] if step["tool"] == "run_command" else step["path"]
-            result = self.use_tool(step)
+            ok, result = self.run_tool(step)
             emit(f"[{label}] {step['tool']}({arg}) -> {result.splitlines()[0] if result else ''}")
-            observations.append({"tool": step["tool"], "input": arg, "result": result})
+            observations.append({"tool": step["tool"], "input": arg, "ok": ok, "result": result})
         emit(f"[{label}] No decision after {MAX_TOOL_STEPS} tool steps.")
         return None, observations
 
 
 AGENT_STAGES = ("Product Lead", "Architect", "QA", "Implementer", "Reviewer")
 PREP_FORMAT = step_format("agent_step", {"notes": {"type": "string"}})
+REFLECT_FORMAT = step_format("agent_reflection")  # no notes field: lessons persist only via write_file
 
 
 class Team:
     """Wraps decide so each agent consults its own memory and tools before its
     final answer, and records lessons from the run when it ends."""
 
-    def __init__(self, decide, *, emit, shell=None, memory=None):
+    def __init__(self, decide, *, emit, shell=None, memory_timeout=90):
         self.decide = decide
-        # Memory steps are optional: give them a cheap, single-attempt path
-        # (memory=...) so an outage can't stall the run, and stop after one failure.
-        self.memory = memory or decide
+        # Memory steps go through the same decide (operations) as everything
+        # else, so a hung route gets rerouted. If a memory step still fails,
+        # recovery already gave up, so memory is off for the rest of the run.
+        self.memory_timeout = memory_timeout
         self.memory_down = False
         self.emit = emit
         self.shell = shell
@@ -154,7 +166,8 @@ class Team:
 
     def _ask(self, stage, model):
         def ask(system, task, **kwargs):
-            return self.memory(system, task, model=model, stage=f"{stage} memory", **kwargs)
+            return self.decide(system, task, model=model, stage=f"{stage} memory",
+                               timeout=self.memory_timeout, **kwargs)
         return ask
 
     def __call__(self, role, task, *, stage="Model", **kwargs):
@@ -172,10 +185,12 @@ class Team:
             return ""
         context = {
             "situation": "before_answering",
-            "task": task[:4000],
-            "instructions": "Check your memory for lessons relevant to this task and use tools "
-                            "if they help. Then decide, putting anything useful for your answer "
-                            "in 'notes' (or leave it empty).",
+            "task": clip(task, CONTEXT_LIMIT),
+            "instructions": "This is a short preparation step, not your answer. Check your "
+                            "memory for lessons relevant to this task, then decide, putting "
+                            "anything useful in 'notes' (or leave it empty). Your workspace is "
+                            "for your own notes and memory: don't write your deliverable there. "
+                            "You'll produce your actual answer in the next step.",
         }
         try:
             step, _ = self.bench(stage).loop(self._ask(stage, self.models[stage]), role, context,
@@ -195,15 +210,19 @@ class Team:
                 "situation": "run_finished",
                 "your_stage": stage,
                 "run_outcome": outcome,
-                "instructions": "This is one run. Record it in your memory once: what you "
-                                "produced, how it was received (approvals, review, failures), "
-                                "and what to do differently. Merge with existing notes rather "
-                                "than duplicating them. Once your observations show the write "
-                                "succeeded, decide.",
+                "instructions": "This is one run. Record it in your memory once, using "
+                                "write_file: anything you don't write to a file is lost when "
+                                "this run ends. Record what you produced, how it was received "
+                                "(approvals, review, failures), and what to do differently. "
+                                "Merge with existing notes rather than duplicating them. Once "
+                                "your observations show the write succeeded, decide.",
             }
             try:
-                self.bench(stage).loop(self._ask(stage, self.models[stage]), self.roles[stage],
-                                       context, fmt=PREP_FORMAT, emit=self.emit, label=stage)
+                _, observations = self.bench(stage).loop(
+                    self._ask(stage, self.models[stage]), self.roles[stage], context,
+                    fmt=REFLECT_FORMAT, emit=self.emit, label=stage)
+                if not any(o["tool"] == "write_file" and o["ok"] for o in observations):
+                    self.emit(f"[{stage}] Recorded nothing to memory this run.")
             except (SystemExit, Exception) as exc:
                 self.memory_down = True
                 self.emit(f"[{stage}] Couldn't record lessons ({exc}); skipping the rest.")

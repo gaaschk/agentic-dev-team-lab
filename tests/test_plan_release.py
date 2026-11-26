@@ -243,5 +243,27 @@ class ReleaseTests(unittest.TestCase):
                 self.assertNotIn("private sentinel", diagnostic)
 
 
+class GatewayErrorTests(unittest.TestCase):
+    def test_cloudflare_gateway_timeouts_are_retryable_timeouts(self):
+        """Regression: a live run died on HTTP 524 because only 5xx up to 504
+        were retryable, so the operations agent never got to recover it."""
+        from urllib.error import HTTPError
+        from team_agents.agent_retry import RetryableAgentError, TransientTimeout
+        env = {"SMART_ROUTER_URL": "https://example.invalid", "SMART_ROUTER_API_KEY": "test"}
+        cases = {524: TransientTimeout, 522: TransientTimeout, 504: TransientTimeout,
+                 520: RetryableAgentError, 503: RetryableAgentError}
+        with patch.dict("os.environ", env), patch.object(plan_release, "build_opener") as build:
+            for code, kind in cases.items():
+                build.return_value.open.side_effect = HTTPError("https://example.invalid", code,
+                                                                "x", {}, None)
+                with self.assertRaises(kind):
+                    plan_release.ask_role("Role", "Goal", stage="Implementer")
+            build.return_value.open.side_effect = HTTPError("https://example.invalid", 401,
+                                                            "x", {}, None)
+            with self.assertRaises(SystemExit) as caught:
+                plan_release.ask_role("Role", "Goal", stage="Implementer")
+            self.assertNotIsInstance(caught.exception, RetryableAgentError)
+
+
 if __name__ == "__main__":
     unittest.main()
