@@ -126,6 +126,20 @@ def make_approval_prompt(io, autonomous):
     return prompt
 
 
+def make_retry_prompt(io, autonomous):
+    """Keep the operations agent working through a failure when autonomous
+    mode is on, instead of blocking on a human click: retry all for the rest
+    of this run rather than stopping. Non-autonomous runs still ask."""
+
+    def prompt(text):
+        if autonomous:
+            io.emit(f"[autonomous] {text.strip()} a")
+            return "a"
+        return io.prompt(text)
+
+    return prompt
+
+
 def operations_preflight():
     """The operations agent's environment check: catch misconfiguration
     before a run burns time on it, instead of a mid-run crash or timeout."""
@@ -231,7 +245,7 @@ def start_run(goal, *, autonomous=False, output_dir=None):
                 artifact_runner=native_artifacts,
             )
             io.seed_stages([node.name for node in workflow if isinstance(node, Step)])
-            retry = AgentRetry(prompt=io.prompt, emit=io.emit, auto_retries=1)
+            retry = AgentRetry(prompt=make_retry_prompt(io, autonomous), emit=io.emit, auto_retries=1)
             approve = make_approval_prompt(io, autonomous)
             run_workflow(workflow, {"goal": goal}, retry=retry, prompt=approve, emit=io.emit,
                          on_start=io.start_stage, on_output=on_output)

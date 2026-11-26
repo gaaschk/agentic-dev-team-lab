@@ -98,8 +98,12 @@ a workflow `Step` explicitly marked `auto_retryable=True`; a malformed or
 invalid response, or any other `RetryableAgentError`, always goes straight to
 the human choice above, since repeating a stage can repeat earlier model
 calls within it. The web UI runs with `auto_retries=1`; the CLI defaults to
-`0` (asks immediately, as above). Before starting a web UI run, the same
-operations agent checks the environment — `SMART_ROUTER_URL`/
+`0` (asks immediately, as above). Once that budget is spent, a failure would
+normally fall back to the same human retry/stop choice — except in an
+autonomous web UI run, where it instead keeps going on its own ("retry all
+for this run") rather than blocking on a click, so the pipeline doesn't stall
+waiting for a human who said not to be asked. Before starting a web UI run,
+the same operations agent checks the environment — `SMART_ROUTER_URL`/
 `SMART_ROUTER_API_KEY` are set and the router is reachable — and refuses to
 start with a clear message instead of crashing mid-run.
 
