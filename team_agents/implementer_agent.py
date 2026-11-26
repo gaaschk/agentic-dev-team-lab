@@ -1,7 +1,10 @@
 """Implementer prompt and structured file-write proposal."""
 
 import json
+import re
 from pathlib import PurePosixPath
+
+_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 
 from . import ROLES_DIR
 from .agent_retry import RetryableAgentError
@@ -38,12 +41,14 @@ FILE_FORMAT = {
 def is_safe_relative_path(path):
     """Reject anything that isn't a plain relative path inside the output directory.
 
-    Backslashes are rejected outright rather than validated as path separators:
-    a path is checked with PurePosixPath, but written to disk with the
-    platform Path, and on Windows a backslash means something to the second
-    that it doesn't to the first — accepting one here would let a path like
-    "src\\..\\escape.py" pass this check and still escape on write."""
-    if not path or not isinstance(path, str) or "\\" in path:
+    Backslashes and drive letters are rejected outright rather than validated
+    as path separators: a path is checked with PurePosixPath, but written to
+    disk with the platform Path, and on Windows both a backslash and a drive
+    prefix like "C:" mean something to the second that they don't to the
+    first — "C:/evil.txt" isn't absolute by POSIX rules, but WindowsPath
+    treats it as drive-rooted, so joining it onto run_dir replaces run_dir
+    entirely instead of nesting inside it."""
+    if not path or not isinstance(path, str) or "\\" in path or _WINDOWS_DRIVE.match(path):
         return False
     posix = PurePosixPath(path)
     if posix.is_absolute():

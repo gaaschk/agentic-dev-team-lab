@@ -24,6 +24,13 @@ class SafeRelativePathTests(TestCase):
         for path in (".", "./", "src\\..\\escape.py", "src\\app.py"):
             self.assertFalse(is_safe_relative_path(path))
 
+    def test_rejects_windows_drive_paths(self):
+        """Regression: "C:/evil.txt" isn't absolute by POSIX rules (no
+        leading slash), but WindowsPath treats a drive prefix as root, so
+        joining it onto run_dir replaces run_dir entirely on write."""
+        for path in ("C:/evil.txt", "D:evil.txt", "c:\\evil.txt"):
+            self.assertFalse(is_safe_relative_path(path))
+
 
 class ParseFilesTests(TestCase):
     def test_parses_a_valid_file_list(self):
