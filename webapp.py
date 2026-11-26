@@ -25,7 +25,7 @@ from team_agents.operations import Operations, list_routes
 from team_agents.workbench import CONTEXT_LIMIT, Team, clip
 from team_agents.role_agents import run as native_artifacts
 from team_agents.reviewer_agent import ask_agent_reviewer
-from workflows.managed import assemble, planning_workflow
+from workflows.managed import SECURITY_REVIEW, assemble, planning_workflow
 from workflows.release import release_workflow
 from workflows.runner import Step, run as run_workflow
 
@@ -198,12 +198,12 @@ def write_stage_document(run_dir, name, result):
         (run_dir / f"{slug}.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
 
 
-def write_implementation_files(run_dir, result, emit):
-    """Materialize the Implementer's proposed files under run_dir/implementation/.
+def write_implementation_files(run_dir, result, emit, folder="implementation"):
+    """Materialize the Implementer's proposed files under run_dir/<folder>/.
     Every path was already validated by parse_files(); re-check and resolve
     here too, so a write can never land outside the run's own directory."""
     run_dir = run_dir.resolve()
-    base = (run_dir / "implementation").resolve()
+    base = (run_dir / folder).resolve()
     base.mkdir(parents=True, exist_ok=True)
     for file in result.get("files", []):
         if not is_safe_relative_path(file["path"]):
@@ -220,6 +220,38 @@ def write_implementation_files(run_dir, result, emit):
             emit(f"[operations] Could not write {file['path']!r}: {exc}")
             continue
         emit(f"[operations] Wrote {target.relative_to(run_dir)}")
+
+
+def make_output_writer(run_dir, io):
+    """The runner's on_output. Proposed code goes to draft/, and reaches
+    implementation/ only after every blocking review in the run passes."""
+    seen = {"proposal": None, "reviewed": False}
+
+    def on_output(name, result, rendered, ok):
+        io.finish_stage(name, rendered, ok, result)
+        if not run_dir:
+            return
+        try:
+            if not ok or result is None:
+                write_stage_document(run_dir, name, rendered)
+                return
+            write_stage_document(run_dir, name, result)
+            if name == "Implementer":
+                seen["proposal"] = result
+                write_implementation_files(run_dir, result, io.emit, folder="draft")
+            elif name == "Reviewer":
+                seen["reviewed"] = result["verdict"] == "PASS"
+                if not seen["reviewed"]:
+                    io.emit("[operations] Review requires changes: the code stays in draft/.")
+            with io.lock:
+                security = any(stage["name"] == SECURITY_REVIEW for stage in io.stages)
+            # A blocked security review arrives with ok=False, so never gets here.
+            if name == (SECURITY_REVIEW if security else "Reviewer") and seen["reviewed"]:
+                write_implementation_files(run_dir, seen["proposal"], io.emit)
+        except OSError as exc:
+            io.emit(f"[operations] Could not write output for {name}: {exc}")
+
+    return on_output
 
 
 def run_record(io):
@@ -252,19 +284,7 @@ def start_run(goal, *, autonomous=False, output_dir=None):
     run_dir = Path(output_dir) / f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}" \
         if output_dir else None
 
-    def on_output(name, result, rendered, ok):
-        io.finish_stage(name, rendered, ok, result)
-        if not run_dir:
-            return
-        try:
-            if ok and result is not None:
-                write_stage_document(run_dir, name, result)
-                if name == "Implementer":
-                    write_implementation_files(run_dir, result, io.emit)
-            else:
-                write_stage_document(run_dir, name, rendered)
-        except OSError as exc:
-            io.emit(f"[operations] Could not write output for {name}: {exc}")
+    on_output = make_output_writer(run_dir, io)
 
     def worker():
         _thread_io[threading.get_ident()] = io
@@ -282,7 +302,8 @@ def start_run(goal, *, autonomous=False, output_dir=None):
                             on_start=io.start_stage, on_output=on_output)
             io.seed_stages(["Project Manager"])
             state = run_workflow(planning_workflow(decide=team), {"goal": goal}, **controls)
-            nodes = assemble(state["approved_team"], workflow, decide=team)
+            nodes = assemble(state["approved_team"], workflow, decide=team,
+                             artifact_runner=native_artifacts)
             io.add_stages([node.name for node in nodes if isinstance(node, Step)])
             run_workflow(nodes, state, **controls)
         except SystemExit as exc:

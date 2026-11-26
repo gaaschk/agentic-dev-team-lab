@@ -81,8 +81,10 @@ for every stage that finishes: a `.md` file (a generic, readable rendering of
 that stage's JSON output — headings per field, bullet lists for arrays, code
 blocks for proposed files) and,
 for structured stages, the raw `.json` alongside it. **This is the one place
-in the lab that writes the Implementer's proposal to disk as real files**,
-under `<run>/implementation/`: every proposed path is validated twice (once
+in the lab that writes the Implementer's proposal to disk as real files**:
+first under `<run>/draft/`, and again under `<run>/implementation/` only after
+the Reviewer returns `PASS` (and the Security Review too, when the run has
+one). Anything only in `draft/` is not approved. Every proposed path is validated twice (once
 when the Implementer's response is parsed, once again right before the write)
 to be relative and unable to escape that directory, and a path that fails
 either check is skipped with a logged reason instead of written anywhere.
@@ -146,13 +148,16 @@ In the web UI, each run starts with the Project Manager. It sees every
 specialist profile and proposes the ones the goal needs, each with a task. You
 approve that team (autonomous runs approve it automatically).
 
-- **Discovery** specialists run first; their reports reach the Product Lead.
+- **Discovery** specialists run first; their reports reach the Product Lead
+  and the Architect.
 - **Assurance** specialists run after QA; their reports reach the Implementer.
 - **Readiness** specialists run after the Reviewer.
 
 The core release (Product Lead, Architect, QA, Implementer, Reviewer) and its
 approvals are the same in every run. Specialists advise: their reports don't
-change approved scope or block a release. The command-line release
+change approved scope. The one exception that can block is the Chief Security
+Officer (`cso`): choosing it also adds a **Security Review** of the proposed
+code after the Reviewer, and `CHANGES_REQUIRED` there ends the run as failed. The command-line release
 (`plan_release.py`) runs the core team only.
 
 To add an agent, create a snake_case Markdown file in `team_agents/roles/`

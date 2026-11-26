@@ -69,6 +69,32 @@ class StageDocumentWritingTests(TestCase):
             written = run_dir / "implementation" / "src" / "app.py"
             self.assertEqual(written.read_text(), "print(1)")
 
+    def test_code_is_published_only_after_every_blocking_review_passes(self):
+        webapp = _import_webapp()
+        proposal = {"files": [{"path": "app.py", "content": "print(1)"}]}
+        passed = {"verdict": "PASS", "blockers": []}
+        changes = {"verdict": "CHANGES_REQUIRED", "blockers": []}
+        for review, security, published in (
+                (passed, None, True), (changes, None, False),
+                (passed, "pass", True), (passed, "block", False), (changes, "pass", False)):
+            with TemporaryDirectory() as tmp:
+                run_dir = Path(tmp)
+                io = webapp.WebIO()
+                io.seed_stages(["Implementer", "Reviewer"]
+                               + (["Security Review"] if security else []))
+                write = webapp.make_output_writer(run_dir, io)
+                write("Implementer", proposal, "", True)
+                self.assertTrue((run_dir / "draft" / "app.py").exists())
+                self.assertFalse((run_dir / "implementation").exists())
+                write("Reviewer", review, "", True)
+                if security == "pass":
+                    self.assertFalse((run_dir / "implementation").exists())
+                    write("Security Review", passed, "", True)
+                elif security == "block":
+                    write("Security Review", None, "Blocked.", False)
+                self.assertEqual((run_dir / "implementation" / "app.py").exists(), published,
+                                 (review["verdict"], security))
+
     def test_refuses_to_write_outside_the_run_directory(self):
         with TemporaryDirectory() as tmp:
             run_dir = Path(tmp)
