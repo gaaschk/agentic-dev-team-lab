@@ -244,7 +244,8 @@ def start_run(goal, *, autonomous=False, output_dir=None):
         try:
             ops = Operations(ask_role, emit=io.emit, routes=list_routes(),
                              advisor=lambda role, task, **kw: ask_role(role, task, timeout=30, **kw))
-            team = Team(ops, emit=io.emit)
+            team = Team(ops, emit=io.emit, memory=lambda role, task, *, model=None, **kw: ask_role(
+                role, task, model=ops.route_for(model), timeout=30, **kw))
             workflow = release_workflow(
                 decide=team,
                 review=lambda *a: ask_agent_reviewer(*a, decide=team),

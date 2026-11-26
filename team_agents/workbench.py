@@ -137,8 +137,12 @@ class Team:
     """Wraps decide so each agent consults its own memory and tools before its
     final answer, and records lessons from the run when it ends."""
 
-    def __init__(self, decide, *, emit, shell=None):
+    def __init__(self, decide, *, emit, shell=None, memory=None):
         self.decide = decide
+        # Memory steps are optional: give them a cheap, single-attempt path
+        # (memory=...) so an outage can't stall the run, and stop after one failure.
+        self.memory = memory or decide
+        self.memory_down = False
         self.emit = emit
         self.shell = shell
         self.notes = {}   # stage -> notes for this run, reused if the stage retries
@@ -150,7 +154,7 @@ class Team:
 
     def _ask(self, stage, model):
         def ask(system, task, **kwargs):
-            return self.decide(system, task, model=model, stage=f"{stage} memory", **kwargs)
+            return self.memory(system, task, model=model, stage=f"{stage} memory", **kwargs)
         return ask
 
     def __call__(self, role, task, *, stage="Model", **kwargs):
@@ -164,6 +168,8 @@ class Team:
         return self.decide(role, task, stage=stage, **kwargs)
 
     def prepare(self, stage, role, task):
+        if self.memory_down:
+            return ""
         context = {
             "situation": "before_answering",
             "task": task[:4000],
@@ -175,13 +181,16 @@ class Team:
             step, _ = self.bench(stage).loop(self._ask(stage, self.models[stage]), role, context,
                                              fmt=PREP_FORMAT, emit=self.emit, label=stage)
         except (SystemExit, Exception) as exc:
-            self.emit(f"[{stage}] Skipped memory check ({exc}).")
+            self.memory_down = True
+            self.emit(f"[{stage}] Skipped memory check ({exc}); memory is off for the rest of this run.")
             return ""
         return step["notes"] if step else ""
 
     def reflect(self, outcome):
         """Ask each agent that ran to record lessons from how the run went."""
         for stage in self.notes:
+            if self.memory_down:
+                return
             context = {
                 "situation": "run_finished",
                 "your_stage": stage,
@@ -196,4 +205,5 @@ class Team:
                 self.bench(stage).loop(self._ask(stage, self.models[stage]), self.roles[stage],
                                        context, fmt=PREP_FORMAT, emit=self.emit, label=stage)
             except (SystemExit, Exception) as exc:
-                self.emit(f"[{stage}] Couldn't record lessons ({exc}).")
+                self.memory_down = True
+                self.emit(f"[{stage}] Couldn't record lessons ({exc}); skipping the rest.")

@@ -78,3 +78,19 @@ class TeamTests(TestCase):
         team = Team(decide, emit=log.append, shell=False)
         self.assertEqual(team("role", "t", stage="Reviewer", model="m"), "final")
         self.assertTrue(any("Skipped memory check" in line for line in log))
+
+    def test_one_memory_failure_turns_memory_off_for_the_run(self):
+        memory_calls = []
+
+        def memory(role, task, *, stage, **kwargs):
+            memory_calls.append(stage)
+            raise SystemExit("router down")
+
+        def decide(role, task, *, stage, **kwargs):
+            return "final"
+
+        team = Team(decide, emit=lambda t: None, shell=False, memory=memory)
+        for stage in ("Product Lead", "Architect", "QA"):
+            self.assertEqual(team("role", "t", stage=stage, model="m"), "final")
+        team.reflect({})
+        self.assertEqual(memory_calls, ["Product Lead memory"])
