@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from team_agents.workbench import FRESH_COPY, Team, Workbench
+from team_agents.workbench import FRESH_COPY, Team, Workbench, used
 
 
 def step(tool, path="", content="", notes=""):
@@ -150,7 +150,7 @@ class TeamTests(TestCase):
         shared = Path(self.home) / "run"
         shared.mkdir()
         command = json.dumps({"tool": "run_command", "path": "", "content": "",
-                              "command": "exit 3", "notes": ""})
+                              "command": "echo under-test; exit 3", "notes": ""})
         decide = FakeDecide([step("decide", notes="advice"),            # before any code
                              step("decide"), command,                    # once code exists
                              step("decide", notes="tests fail")])
@@ -164,7 +164,7 @@ class TeamTests(TestCase):
         self.assertEqual(offered, [True, False, False, True])
         final = decide.calls[-1][1]
         self.assertIn("tests fail", final)
-        self.assertIn("$ exit 3\nexit 3", final)
+        self.assertIn("$ echo under-test; exit 3\nexit 3", final)
 
     def test_nothing_has_to_be_run_with_the_shell_off(self):
         shared = Path(self.home) / "run"
@@ -186,3 +186,18 @@ class TeamTests(TestCase):
         ok, result = bench.run_tool({"tool": "run_command", "command": FRESH_COPY})
         self.assertEqual((ok, result), (True, "exit 0\n"))
         self.assertEqual([p.name for p in stale.iterdir()], ["app.py"])
+
+    def test_only_a_command_that_exercises_the_copy_counts(self):
+        """Regression: in a live run a blank command and a missing `python`
+        both counted as having run the code."""
+        def seen(command, result="exit 0\n", ok=True):
+            return [{"tool": "run_command", "input": command, "ok": ok, "result": result}]
+
+        for command, result in (("", "exit 0\n"), ("ls", "exit 0\n"), (FRESH_COPY, "exit 0\n"),
+                                ("cd under-test && python -m unittest", "exit 127\nnot found")):
+            self.assertFalse(used(seen(command, result), "run_command"), command)
+        for command, result in (("cd under-test && python3 -m unittest", "exit 1\nFAILED"),
+                                (FRESH_COPY + " && cd under-test && python3 app.py", "exit 0\n")):
+            self.assertTrue(used(seen(command, result), "run_command"), command)
+        self.assertFalse(Workbench(Path(self.home) / "qa", shell="host").run_tool(
+            {"tool": "run_command", "command": "  "})[0])
