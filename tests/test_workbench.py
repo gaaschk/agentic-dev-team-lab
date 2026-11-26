@@ -199,5 +199,10 @@ class TeamTests(TestCase):
         for command, result in (("cd under-test && python3 -m unittest", "exit 1\nFAILED"),
                                 (FRESH_COPY + " && cd under-test && python3 app.py", "exit 0\n")):
             self.assertTrue(used(seen(command, result), "run_command"), command)
-        self.assertFalse(Workbench(Path(self.home) / "qa", shell="host").run_tool(
-            {"tool": "run_command", "command": "  "})[0])
+        bench = Workbench(Path(self.home) / "qa", shell="host")
+        self.assertFalse(bench.run_tool({"tool": "run_command", "command": "  "})[0])
+        command = "cd under-test; sleep 5"
+        with patch("team_agents.workbench.COMMAND_TIMEOUT", 0.2):
+            ok, result = bench.run_tool({"tool": "run_command", "command": command})
+        self.assertFalse(ok)
+        self.assertTrue(used(seen(command, result, ok), "run_command"))

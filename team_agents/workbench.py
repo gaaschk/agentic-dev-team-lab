@@ -16,6 +16,7 @@ MAX_TOOL_STEPS = 8
 # Workspaces persist across runs, so the old copy goes first.
 FRESH_COPY = 'rm -rf under-test && cp -R "$RUN_WORKSPACE/proposal" under-test'
 COMMAND_TIMEOUT = 60
+TIMED_OUT = "command timed out"
 OUTPUT_LIMIT = 6000
 CONTEXT_LIMIT = 20000  # a stage output or task shown to an agent's memory step
 AGENTS_HOME = Path(__file__).resolve().parents[1] / ".agents"
@@ -93,10 +94,12 @@ def clip(text, limit=OUTPUT_LIMIT):
 
 
 def checked_the_code(observation):
-    """True for a command that exercised the copy under test. A failing test is
-    a result too; a blank command, a bare copy, or a missing program is not."""
+    """True for a command that exercised the copy under test. A failing or
+    hanging test is a result too; a blank command, a bare copy, or a missing
+    program is not."""
     command = observation["input"].strip()
-    return (observation["tool"] == "run_command" and observation["ok"]
+    ran = observation["ok"] or observation["result"].startswith(TIMED_OUT)
+    return (observation["tool"] == "run_command" and ran
             and "under-test" in command.replace(FRESH_COPY, "")
             and not observation["result"].startswith(("exit 126\n", "exit 127\n")))
 
@@ -146,7 +149,7 @@ class Workbench:
         try:
             return True, self._tool(step)
         except subprocess.TimeoutExpired:
-            return False, f"command timed out after {COMMAND_TIMEOUT}s"
+            return False, f"{TIMED_OUT} after {COMMAND_TIMEOUT}s"
         except (OSError, ValueError, UnicodeDecodeError) as exc:
             return False, f"error: {exc}"
 
