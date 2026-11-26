@@ -104,3 +104,14 @@ class TeamTests(TestCase):
         self.assertIn("[QA] Recorded nothing to memory this run.", log)
         reflect_format = decide.calls[-1][2]["response_format"]["json_schema"]["schema"]
         self.assertNotIn("notes", reflect_format["properties"])
+
+    def test_a_failed_write_does_not_count_as_recorded_memory(self):
+        decide = FakeDecide([step("decide"),
+                             step("write_file", path="../escape.md", content="lost"),
+                             step("decide")])
+        log = []
+        team = Team(decide, emit=log.append, shell=False)
+        team("role", "t", stage="QA", model="m")
+        team.reflect({})
+        self.assertIn("[QA] Recorded nothing to memory this run.", log)
+

@@ -88,30 +88,37 @@ class Workbench:
         return target
 
     def use_tool(self, step):
-        tool = step["tool"]
+        return self.run_tool(step)[1]
+
+    def run_tool(self, step):
+        """(succeeded, result text)."""
         try:
-            if tool == "list_files":
-                files = sorted(str(p.relative_to(self.workspace)) for p in self.workspace.rglob("*")
-                               if p.is_file())
-                return "\n".join(files[:200]) or "(workspace is empty)"
-            if tool == "read_file":
-                return clip(self._path(step["path"]).read_text(encoding="utf-8"))
-            if tool == "write_file":
-                target = self._path(step["path"])
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(step["content"], encoding="utf-8")
-                return f"wrote {len(step['content'])} characters to {step['path']}"
-            if tool == "run_command":
-                if not self.shell:
-                    return "shell commands are disabled (the operator can set LAB_AGENT_SHELL=1)"
-                done = subprocess.run(step["command"], shell=True, cwd=self.workspace,
-                                      capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
-                return clip(f"exit {done.returncode}\n{done.stdout}{done.stderr}")
+            return True, self._tool(step)
         except subprocess.TimeoutExpired:
-            return f"command timed out after {COMMAND_TIMEOUT}s"
+            return False, f"command timed out after {COMMAND_TIMEOUT}s"
         except (OSError, ValueError, UnicodeDecodeError) as exc:
-            return f"error: {exc}"
-        return f"unknown tool {tool!r}"
+            return False, f"error: {exc}"
+
+    def _tool(self, step):
+        tool = step["tool"]
+        if tool == "list_files":
+            files = sorted(str(p.relative_to(self.workspace)) for p in self.workspace.rglob("*")
+                           if p.is_file())
+            return "\n".join(files[:200]) or "(workspace is empty)"
+        if tool == "read_file":
+            return clip(self._path(step["path"]).read_text(encoding="utf-8"))
+        if tool == "write_file":
+            target = self._path(step["path"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(step["content"], encoding="utf-8")
+            return f"wrote {len(step['content'])} characters to {step['path']}"
+        if tool == "run_command":
+            if not self.shell:
+                return "shell commands are disabled (the operator can set LAB_AGENT_SHELL=1)"
+            done = subprocess.run(step["command"], shell=True, cwd=self.workspace,
+                                  capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
+            return clip(f"exit {done.returncode}\n{done.stdout}{done.stderr}")
+        raise ValueError(f"unknown tool {tool!r}")
 
     def loop(self, ask, role, context, *, fmt, emit, label):
         """Run tool steps until the model says "decide". Returns (final step or
@@ -125,9 +132,9 @@ class Workbench:
             if step["tool"] == "decide":
                 return step, observations
             arg = step["command"] if step["tool"] == "run_command" else step["path"]
-            result = self.use_tool(step)
+            ok, result = self.run_tool(step)
             emit(f"[{label}] {step['tool']}({arg}) -> {result.splitlines()[0] if result else ''}")
-            observations.append({"tool": step["tool"], "input": arg, "result": result})
+            observations.append({"tool": step["tool"], "input": arg, "ok": ok, "result": result})
         emit(f"[{label}] No decision after {MAX_TOOL_STEPS} tool steps.")
         return None, observations
 
@@ -214,7 +221,7 @@ class Team:
                 _, observations = self.bench(stage).loop(
                     self._ask(stage, self.models[stage]), self.roles[stage], context,
                     fmt=REFLECT_FORMAT, emit=self.emit, label=stage)
-                if not any(o["tool"] == "write_file" for o in observations):
+                if not any(o["tool"] == "write_file" and o["ok"] for o in observations):
                     self.emit(f"[{stage}] Recorded nothing to memory this run.")
             except (SystemExit, Exception) as exc:
                 self.memory_down = True
