@@ -128,6 +128,16 @@ class OperationsTests(TestCase):
             decide.fail_next = True
             self.assertEqual(ops("r", "t", model="m", stage="Implementer"), "ok")
 
+    def test_a_skipped_memory_wait_is_not_billed_to_the_run(self):
+        slept = []
+        ops, _ = make(Mock(side_effect=TransientTimeout("slow.")),
+                      Mock(return_value=decision("retry", wait=120)), clock=lambda: 0.0)
+        ops.sleep = slept.append
+        with self.assertRaises(TransientTimeout):
+            ops("r", "t", model="m", stage="QA memory")
+        self.assertEqual(slept, [120, 120])  # a third wait would pass memory's 270s
+        self.assertEqual((ops.recovery_seconds, ops.memory_seconds), (240, 240))
+
     def test_without_its_model_it_falls_back_to_a_short_fixed_policy(self):
         decide = Mock(side_effect=TransientTimeout("slow."))
         ops, _ = make(decide, Mock(side_effect=SystemExit("ops model down.")))

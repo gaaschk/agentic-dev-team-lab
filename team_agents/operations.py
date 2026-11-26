@@ -191,6 +191,8 @@ class Operations:
                     self.emit(f"[operations] {stage}: the {decision['wait']}s wait would reach the "
                               f"{'memory' if optional else 'run-wide'} recovery limit "
                               f"({self.limit_text(optional)}); not retrying.")
+                    if optional:  # the run goes on: don't bill it for a wait never taken
+                        self.charge(-decision["wait"], optional)
                     raise
                 self.sleep(decision["wait"])
                 continue
