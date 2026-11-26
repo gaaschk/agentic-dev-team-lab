@@ -90,7 +90,16 @@ On a timeout, temporary router failure, or invalid agent response, choose
 this run, or `s` (or Enter) to stop. A failed retry ends the run. This does not
 override a real blocker or substitute for an approval.
 
-`AgentRetry(auto_retries=N)` adds an operations layer in front of that choice:
+In the web UI, an operations agent (`team_agents/operations.py`) handles
+runtime failures first, at the level of a single model call rather than a
+whole stage. Each call is read-only, so repeating it never repeats other
+work. On a timeout, 429/5xx, or dropped connection it retries that call up to
+3 times with backoff (2s, 4s). If you set `LAB_FALLBACK_MODELS` (a
+comma-separated list of router routes, e.g. `smart-sonnet`), a route that
+times out is retired for the rest of the run, and later calls go to the next
+fallback route. Each action is logged with an `[operations]` prefix.
+
+Above that, `AgentRetry(auto_retries=N)` adds a stage-level layer in front of that choice:
 it spends a budget of `N` automatic retries for the whole run — not per
 stage — on its own, logging each attempt, before ever asking a human. Only a
 `TransientTimeout` (a genuine model/network timeout) is eligible, and only on

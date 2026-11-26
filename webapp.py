@@ -21,6 +21,7 @@ from plan_release import ask_role
 from team_agents.agent_retry import AgentRetry
 from team_agents.implementer_agent import is_safe_relative_path
 from team_agents.markdown import render_document
+from team_agents.operations import Operations
 from team_agents.role_agents import run as native_artifacts
 from team_agents.reviewer_agent import ask_agent_reviewer
 from workflows.release import release_workflow
@@ -239,9 +240,10 @@ def start_run(goal, *, autonomous=False, output_dir=None):
         if run_dir:
             io.emit(f"[operations] Writing this run's output to {run_dir}")
         try:
+            ops = Operations(ask_role, emit=io.emit)
             workflow = release_workflow(
-                decide=ask_role,
-                review=lambda *a: ask_agent_reviewer(*a, decide=ask_role),
+                decide=ops,
+                review=lambda *a: ask_agent_reviewer(*a, decide=ops),
                 artifact_runner=native_artifacts,
             )
             io.seed_stages([node.name for node in workflow if isinstance(node, Step)])
