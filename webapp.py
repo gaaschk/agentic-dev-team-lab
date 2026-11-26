@@ -259,17 +259,21 @@ def start_run(goal, *, autonomous=False, output_dir=None):
         except SystemExit as exc:
             io.emit(str(exc))
         finally:
-            if team and team.notes:
-                io.emit("[team] Agents are recording lessons from this run…")
-                with io.lock:
-                    outcome = {
-                        "stages": [{"name": s["name"], "status": s["status"],
-                                    "output": (s["output"] or "")[:1500]} for s in io.stages],
-                        "recent_log": io.log[-15:],
-                    }
-                team.reflect(outcome)
-            del _thread_io[threading.get_ident()]
-            io.done = True
+            try:
+                if team and team.notes:
+                    io.emit("[team] Agents are recording lessons from this run…")
+                    with io.lock:
+                        outcome = {
+                            "stages": [{"name": s["name"], "status": s["status"],
+                                        "output": (s["output"] or "")[:1500]} for s in io.stages],
+                            "recent_log": io.log[-15:],
+                        }
+                    team.reflect(outcome)
+            except Exception as exc:
+                io.emit(f"[team] Couldn't record lessons ({exc}).")
+            finally:
+                del _thread_io[threading.get_ident()]
+                io.done = True
 
     threading.Thread(target=worker, daemon=True).start()
     return True, None
